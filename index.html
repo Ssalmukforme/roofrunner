@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#28262c" />
+    <meta name="description" content="노을이 지는 도시 위, 나만의 길과 기록. 3D 루프탑 파쿠르 타임 어택 게임 ROOFRUNNER." />
+    <title>ROOFRUNNER — 해가 지기 전에</title>
+  </head>
+  <body>
+    <canvas id="world" aria-label="노을빛 도시의 3D 파쿠르 코스"></canvas>
+    <div class="screen-vignette"></div>
+    <div id="speed-lines" aria-hidden="true"><svg viewBox="0 0 1000 700" preserveAspectRatio="none"><g stroke="#ffe6c7" stroke-width="1.4"><path d="m-80 45 200 95m-40 15 120 50m-180 82 145 26M-10 420l125-18m-180 280 230-136m20 150 85-88M1080 45l-200 95m40 15-120 50m180 82-145 26m175 107-125-18m180 280L835 546m-20 150-85-88M240-40l70 105m450-105-70 105"/></g></svg></div>
+    <div id="app">
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="루프러너 홈"><svg viewBox="0 0 32 32" fill="none"><path d="M3 25 12 8h9l-5 9h7l-5 8" stroke="currentColor" stroke-width="4"/><path d="m22 8 7-4" stroke="currentColor" stroke-width="3"/></svg>ROOFRUNNER<span class="brand-dot">®</span></a>
+        <nav aria-label="메뉴"><button class="nav-item active" data-tab="play">플레이</button><button class="nav-item" data-tab="maps">코스 선택 <span id="map-count">04</span></button><button class="nav-item" data-tab="records">내 기록 <span id="record-count">00</span></button><button class="nav-item" data-tab="guide">플레이 가이드 <span>↗</span></button></nav>
+        <div class="top-actions"><span class="live-dot"></span><span class="build-label">FIRST LIGHT · VOL. 01</span><button id="sound-button" class="icon-button" aria-label="소리 켜기" title="소리 켜기"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11 5 6 9H3v6h3l5 4V5Z"/><path id="sound-waves" d="m16 9 5 6m0-6-5 6"/></svg></button></div>
+      </header>
+      <main id="home">
+        <section class="hero">
+          <div class="eyebrow"><span></span> THE CITY IS YOUR PLAYGROUND</div>
+          <h1>ROOF<br><span>RUNNER</span><span class="title-period">.</span></h1>
+          <div class="hero-subtitle">해가 지기 전에, 한 번 더.</div>
+          <p class="hero-description">도시 곳곳의 필수 옥상 8곳, 방문 순서는 자유.<br>나만의 최단 경로로 모든 옥상을 밟아보세요.</p>
+          <button id="start-button" class="start-button"><span class="button-play">▶</span><span>달리기 시작<span class="button-sub">LET'S MAKE A RUN</span></span><span class="button-arrow">↗</span></button>
+          <div class="start-note"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span>자동 질주</span><span class="note-divider"></span><kbd>SPACE</kbd><span>점프 / 벽타기</span></div>
+        </section>
+        <div class="scene-label"><span class="scene-cross">+</span><div><span id="scene-place">SEOUL, ABOVE THE NOISE</span><span id="scene-coords">37°33′ N &nbsp; 126°58′ E &nbsp; / &nbsp; 18:42</span></div></div>
+        <div class="view-indicator"><span></span> IN-GAME WORLD <span class="indicator-rule"></span> <span id="view-indicator-count">01 / 04</span></div>
+        <section class="bottom-deck">
+          <article class="course-card" id="course-card" role="button" tabindex="0" aria-label="코스 선택 열기"><div class="course-art" id="course-art"></div><div class="course-info"><div class="card-eyebrow">선택된 코스 <span class="pill" id="course-code">COURSE 001</span></div><h2><span id="course-name">선셋 디스트릭트</span> <span class="course-switch">코스 변경 ↗</span></h2><p id="course-latin">Sunset District</p><div class="course-tags" id="course-tags"></div></div></article>
+          <article class="best-card"><div class="card-eyebrow"><span class="small-star">✳</span> PERSONAL BEST <span id="best-course" class="best-course">선셋 디스트릭트</span></div><div id="home-best" class="best-time">--<span>:</span>--<small>.---</small></div><p id="best-caption">도시 위에 첫 기록을 남겨보세요.</p></article>
+          <article class="tip-card"><span class="tip-icon">↗</span><div class="card-eyebrow">FIND YOUR FLOW</div><h3>어디부터 달릴지는,<br>당신의 선택.</h3><p>필수 옥상 8곳을 모두 밟는 순간 기록 완성.</p></article>
+        </section>
+      </main>
+      <footer id="home-footer"><span>NO ROADS. NO LIMITS.</span><span>3D PARKOUR / TIME ATTACK <i></i> 개인 기록은 이 브라우저에 저장됩니다.</span><span>자동 카메라 <span class="footer-dot">●</span></span></footer>
+      <section id="hud" class="hidden" aria-label="게임 정보"><div class="hud-top"><div class="hud-course"><span class="live-dot"></span> <span id="hud-course-name">SUNSET DISTRICT</span> <small id="hud-course-code">COURSE 001</small></div><div class="hud-timer"><span>RUN TIME</span><strong id="timer">00:00.000</strong><small id="hud-best">BEST —</small></div><button id="pause-button" class="glass-button" aria-label="일시정지">Ⅱ <span>ESC</span></button></div><div class="progress-panel"><span id="checkpoint-label">필수 옥상 0 / 8</span><div class="progress-track"><div id="progress-fill"></div></div><span id="finish-label">방문 순서 자유</span></div><aside class="minimap" aria-label="도시 미니맵"><div class="minimap-heading">DISTRICT MAP <span>N ↑</span></div><svg id="minimap-svg" viewBox="0 0 196 196" aria-label="필수 옥상과 현재 위치"></svg><div id="objective-list" class="objective-list"></div><p id="map-target"></p><small>주황 · 미방문 &nbsp; 민트 · 방문 &nbsp; ▲ · 나</small></aside><div id="checkpoint-toast" class="checkpoint-toast">CHECKPOINT</div><div class="hud-bottom"><div class="movement-state"><span id="movement-label">READY TO RUN</span><div class="stamina"><div id="stamina-fill"></div></div><small>WALL GRIP</small></div><div class="control-hint"><span><kbd>W A S D</kbd> 이동</span><span><kbd>SPACE</kbd> 점프 · 벽타기</span><span><kbd>SHIFT</kbd> 슬라이딩</span><span><kbd>R</kbd> 복귀</span><span><kbd>T</kbd> 처음부터</span></div><div class="speed-display"><strong id="speed">0</strong><span>KM/H</span></div></div></section>
+      <div id="countdown" class="countdown hidden"></div>
+      <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-card"><button id="modal-close" class="modal-close" aria-label="닫기">×</button><div id="modal-content"></div></div></div>
+      <div id="notice" class="notice hidden" role="status"></div>
+      <div id="loading" class="loading"><span class="loading-logo">ROOFRUNNER<span>®</span></span><span class="loading-text">도시가 깨어나는 중...</span></div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
