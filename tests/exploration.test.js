@@ -36,12 +36,13 @@ test('respawning and revisiting preserve collected objectives; a new run resets 
   assert.equal(run.visited.size,1);assert.equal(run.elapsed,8000);
   const fresh=createRun(course);assert.equal(fresh.visited.size,0);assert.equal(fresh.elapsed,0);assert.equal(fresh.respawn,0);
 });
-test('maps extend around a central spawn, use unique objective labels, and have separate records',()=>{
+test('maps spread out from the start, use unique objective labels, and have separate records',()=>{
   for(const map of MAPS){
     const b=districtBounds(map.course);
-    assert.ok(b.minX<-60&&b.maxX>60&&b.minZ<-60&&b.maxZ>60);
+    assert.ok(b.maxX-b.minX>=100&&b.maxZ-b.minZ>=100,`${map.id} is too small to explore`);
     assert.equal(new Set(map.course.filter(p=>p.required).map(p=>p.label)).size,8);
     assert.equal(map.course[0].required,false);
-    assert.match(map.storageKey,/v4-explore/);
+    assert.match(map.storageKey,/v5-/);
   }
+  assert.equal(new Set(MAPS.map(m=>m.storageKey)).size,MAPS.length);
 });

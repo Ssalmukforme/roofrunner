@@ -59,177 +59,209 @@ const DAWN = {
   street:'#7a7a80',streetMark:'#cfc8c0',bird:'#8a8894',
   heights:{near:[6,14],far:[10,34],back:[18,60]},landmark:'masts',props:'green',ui:'#f2a97b',tank:'#b9b2aa',
 };
-// Courses are written as steps: `gap` is the open air between two rooftop edges, `dy` the height change.
-// One jump clears about 17m of flat gap and climbs at most ~2.9m, so anything taller needs a wall section.
-function buildCourse(first,steps){
-  const course=[{...first}];
-  for(const step of steps){
-    const prev=course.at(-1);
-    course.push({
-      x:prev.x+(step.dx||0),
-      z:prev.z-(step.gap+prev.d/2+step.d/2),
-      y:prev.y+(step.dy||0),
-      w:step.w,d:step.d,name:step.name,wall:step.wall,climb:!!step.wall,slide:step.slide,
-    });
+// ---------------------------------------------------------------- districts
+// A district is authored as a walk over rooftops: each roof is placed next to one already on the map —
+// `dir` N/E/S/W, `gap` the open air between the two facing edges, `off` a sideways shift, `dy` a height
+// change. The height change decides what kind of link that is: small steps work in both directions,
+// anything bigger than a jump can climb is a one-way drop, and a `wall` step is climbed by kicking the
+// taller building's facade and dropped back down. `join` links two roofs that already exist, which is
+// how loops and shortcuts close. Each city uses this to build a different shape, not a different grid.
+const DIRS={N:[0,-1],S:[0,1],E:[1,0],W:[-1,0]};
+// What the body can actually do, measured with the movement tests: flat 8.5m, +1m 8m, +2m 6.5m both
+// ways; drops up to 13m; a facade kick tops +4m from 9–12.5m out and +5m from 9–10.5m out.
+export const JUMP={both:{0:8.5,1:8,2:6.5},drop:13,wall:{4:[9,12.5],5:[9,10.5]},overlap:6};
+export function linkGeometry(a,b){
+  const ox=Math.min(a.x+a.w/2,b.x+b.w/2)-Math.max(a.x-a.w/2,b.x-b.w/2);
+  const oz=Math.min(a.z+a.d/2,b.z+b.d/2)-Math.max(a.z-a.d/2,b.z-b.d/2);
+  if(ox>0&&oz<=0)return {axis:'z',overlap:ox,gap:-oz,dir:[0,Math.sign(b.z-a.z)]};
+  if(oz>0&&ox<=0)return {axis:'x',overlap:oz,gap:-ox,dir:[Math.sign(b.x-a.x),0]};
+  return null;
+}
+export function buildDistrict({start,steps}){
+  const course=[{id:'start',...start,required:false,label:null,links:[]}];
+  const byId=new Map([['start',0]]),walls=[];
+  const add=(i,j)=>{if(!course[i].links.includes(j))course[i].links.push(j);};
+  const connect=(i,j,kind,wall={})=>{
+    if(kind==='both'){add(i,j);add(j,i);return;}
+    const [hi,lo]=course[i].y>=course[j].y?[i,j]:[j,i];
+    add(hi,lo);
+    if(kind!=='wall')return;
+    add(lo,hi);course[hi].climb=true;
+    const g=linkGeometry(course[lo],course[hi]);
+    walls.push({from:lo,to:hi,axis:g.axis,dir:g.dir,side:wall.side||1,width:wall.width||7,rise:wall.rise||18,extend:wall.extend??3});
+  };
+  for(const s of steps){
+    if(s.join){connect(byId.get(s.join[0]),byId.get(s.join[1]),s.wall?'wall':s.kind||'both',s.wall);continue;}
+    const fromIndex=byId.get(s.from),from=course[fromIndex],[dx,dz]=DIRS[s.dir],off=s.off||0;
+    const along=dx?from.w/2+s.gap+s.w/2:from.d/2+s.gap+s.d/2;
+    byId.set(s.id,course.push({id:s.id,name:s.name,x:from.x+dx*along+(dz?off:0),z:from.z+dz*along+(dx?off:0),y:from.y+(s.dy||0),
+      w:s.w,d:s.d,required:!!s.label,label:s.label||null,slide:s.slide,links:[]})-1);
+    connect(fromIndex,course.length-1,s.wall?'wall':Math.abs(s.dy||0)>2?'drop':'both',s.wall);
   }
-  return course;
+  return {course,walls};
 }
-export const ALLEY = { clearance:.8, extend:4 };
-// A wall section is a canyon: two neighbouring buildings run past the rooftops on either side and the
-// course jumps into the gap between them. Nothing stands in the running line — the faces sit just
-// outside the rooftop edges — so the climb is made by kicking off the taller facade at the far end,
-// and anyone who takes off along an edge gets a wall run down the side of the building for free.
-export function buildTowers(course){
-  const towers=[];
-  course.forEach((b,i)=>{
-    if(!b.wall||!i)return;
-    const entryIndex=b.wall.from??i-1;
-    const a=course[entryIndex],width=b.wall.width||14,rise=b.wall.rise||18,lead=b.wall.side||1;
-    const offset=Math.max(a.w,b.w)/2+ALLEY.clearance;
-    const back=a.z-a.d/2+ALLEY.extend,front=b.z+b.d/2-ALLEY.extend;
-    const shared={z:(back+front)/2,d:back-front,bottom:0,index:entryIndex,exitIndex:i,entryY:a.y,exitY:b.y};
-    for(const side of [-1,1])towers.push({...shared,x:a.x+side*(offset+width/2),w:width,
-      top:Math.max(a.y,b.y)+rise-(side===lead?0:6),side,lead:side===lead});
+export const ALLEY = { clearance:.8 };
+// A wall section is a gap flanked by two neighbouring buildings that stand just outside the rooftop
+// edges, so nothing blocks the running line. The climb is the kick off the taller facade at the end;
+// taking off along an edge gives a wall run down the side of the building on the way.
+export function buildTowers(course,walls=[]){
+  return walls.flatMap(w=>{
+    const a=course[w.from],b=course[w.to],[dx,dz]=w.dir,alongZ=w.axis==='z',s=alongZ?dz:dx;
+    const back=(alongZ?a.z:a.x)+s*((alongZ?a.d:a.w)/2-w.extend),front=(alongZ?b.z:b.x)-s*((alongZ?b.d:b.w)/2-w.extend);
+    const mid=(back+front)/2,span=Math.abs(front-back);
+    const offset=Math.max(alongZ?a.w:a.d,alongZ?b.w:b.d)/2+ALLEY.clearance;
+    // The lateral axis is the travel direction turned a quarter to the right: (-dz, dx).
+    const lateral=alongZ?a.x:a.z,turn=alongZ?-dz:dx;
+    return [-1,1].map(side=>{
+      const c=lateral+side*turn*(offset+w.width/2);
+      const shared={bottom:0,index:w.from,exitIndex:w.to,entryY:a.y,exitY:b.y,axis:w.axis,dir:w.dir,span,width:w.width,side,
+        lead:side===w.side,top:Math.max(a.y,b.y)+w.rise-(side===w.side?0:6)};
+      return alongZ?{...shared,x:c,z:mid,w:w.width,d:span}:{...shared,x:mid,z:c,w:span,d:w.width};
+    });
   });
-  return towers;
 }
-// Rooftop services — duct runs, drying frames, awnings — cross the marked line low enough that you
-// have to slide under them: clearance sits between the sliding height (.85) and standing height (1.7).
-export const GATE = { clear:1.05, height:1.65, depth:2.2, margin:1.5, offset:6 };
+// Rooftop services — duct runs, drying frames, awnings — cross a roof low enough that you have to slide
+// under them: clearance sits between the sliding height (.85) and standing height (1.7). `axis` is the
+// direction of travel they block; `at` shifts them along it from the roof's centre.
+export const GATE = { clear:1.05, height:1.65, depth:2.2, margin:1.5 };
 export function buildGates(course){
-  const gates=[];
-  course.forEach((p,index)=>{
-    if(!p.slide)return;
-    const {offset=GATE.offset,width=p.w-GATE.margin*2,kind='duct'}=p.slide;
-    gates.push({x:p.x,z:p.z-p.d/2+offset,w:width,d:GATE.depth,
-      bottom:p.y+GATE.clear,top:p.y+GATE.clear+GATE.height,roofY:p.y,index,kind});
+  return course.flatMap((p,index)=>{
+    if(!p.slide)return [];
+    const {kind='duct',axis='z',at=0}=p.slide,alongZ=axis==='z',span=(alongZ?p.w:p.d)-GATE.margin*2;
+    return [{x:alongZ?p.x:p.x+at,z:alongZ?p.z+at:p.z,w:alongZ?span:GATE.depth,d:alongZ?GATE.depth:span,axis,span,
+      bottom:p.y+GATE.clear,top:p.y+GATE.clear+GATE.height,roofY:p.y,index,kind}];
   });
-  return gates;
 }
 export const MAPS = [
   {
     id:'sunset',code:'COURSE 001',name:'선셋 디스트릭트',latin:'Sunset District',difficulty:'입문',
-    blurb:'노을이 내려앉은 첫 번째 도시. 기본 리듬을 익히기 좋은 코스입니다.',
-    place:'SEOUL, ABOVE THE NOISE',coords:'37°33′ N &nbsp; 126°58′ E &nbsp; / &nbsp; 18:42',
-    tags:['입문','옥상 12개','벽 2곳','슬라이딩 2곳'],storageKey:'roofrunner-records-v3-sunset',theme:SUNSET,
-    // Even rhythm, short gaps, gentle rises: the course that teaches the run.
-    course:buildCourse({x:0,z:0,y:20,w:16,d:20,name:'출발 옥상'},[
-      {gap:6,  dx:0,  dy:0,  w:14,d:18,name:'첫 번째 도약'},
-      {gap:6.5,dx:5,  dy:1,  w:15,d:18,name:'오렌지 테라스'},
-      {gap:7,  dx:9,  dy:1,  w:16,d:18,name:'간판 옥상',slide:{kind:'laundry'}},
-      {gap:12, dx:0,  dy:4,  w:16,d:20,name:'월 런 앨리',wall:{side:1}},
-      {gap:7,  dx:-4, dy:0,  w:17,d:19,name:'스카이 가든'},
-      {gap:7.5,dx:-9, dy:1,  w:16,d:18,name:'바람의 옥상'},
-      {gap:9,  dx:-4, dy:-2, w:16,d:18,name:'기울어진 지붕'},
-      {gap:10, dx:0,  dy:5,  w:16,d:20,name:'마지막 벽',wall:{side:-1}},
-      {gap:7,  dx:4,  dy:0,  w:16,d:19,name:'광장 위'},
-      {gap:9,  dx:6,  dy:-1, w:17,d:19,name:'마지막 직선',slide:{kind:'duct'}},
-      {gap:7,  dx:-3, dy:0,  w:22,d:24,name:'도착'},
-    ]),
+    shape:'원형 광장',blurb:'광장을 한 바퀴 두르는 옥상 고리. 시계 방향이든 반대든, 네 개의 육교로 가로질러도 됩니다.',
+    place:'SEOUL, ABOVE THE NOISE',coords:'37°33′ N &nbsp; 126°58′ E &nbsp; / &nbsp; 18:42',theme:SUNSET,
+    decor:{plaza:{x:0,z:0,r:36}},
+    // A ring of roofs around an open square, four footbridges to the centre, two bell-tower perches.
+    layout:{start:{x:0,z:0,y:20,w:22,d:22,name:'노을 광장 · 출발'},steps:[
+      {id:'bn',from:'start',dir:'N',gap:7,w:10,d:12,name:'북쪽 육교'},
+      {id:'be',from:'start',dir:'E',gap:7,w:12,d:10,name:'동쪽 육교'},
+      {id:'bs',from:'start',dir:'S',gap:7,w:10,d:16,name:'남쪽 육교'},
+      {id:'bw',from:'start',dir:'W',gap:7,w:10,d:10,name:'서쪽 육교'},
+      {id:'n',from:'bn',dir:'N',gap:7,w:24,d:14,dy:1,label:'A',name:'시계탑 광장'},
+      {id:'ne1',from:'n',dir:'E',gap:5,w:24,d:12,dy:2,name:'빨래 건조대 골목',slide:{kind:'laundry',axis:'x'}},
+      {id:'ne',from:'ne1',dir:'E',gap:5,w:16,d:20,off:4,dy:-2,name:'노을 모퉁이'},
+      {id:'perch',from:'ne',dir:'N',gap:10,w:16,d:14,dy:4,wall:{side:-1,extend:0},label:'B',name:'노을 전망대'},
+      {id:'e1',from:'ne',dir:'S',gap:5,w:14,d:14,off:-1,name:'간판 옥상'},
+      {id:'e',from:'e1',dir:'S',gap:6,w:18,d:22,off:-6,dy:-1,label:'C',name:'스카이 가든'},
+      {join:['be','e']},
+      {id:'se1',from:'e',dir:'S',gap:8,w:16,d:14,off:1,name:'물탱크 길'},
+      {id:'se',from:'se1',dir:'S',gap:6,w:18,d:16,off:-4,dy:-1,label:'D',name:'오렌지 테라스'},
+      {id:'s1',from:'se',dir:'W',gap:6,w:22,d:12,off:-1,dy:2,name:'덕트 지붕',slide:{kind:'duct',axis:'x'}},
+      {id:'s',from:'s1',dir:'W',gap:5,w:20,d:18,off:-2,dy:-2,name:'남쪽 광장'},
+      {join:['bs','s']},
+      {id:'sw',from:'s',dir:'W',gap:6,w:16,d:16,off:-4,dy:1,label:'E',name:'교회 첨탑'},
+      {id:'bell',from:'sw',dir:'S',gap:10,w:14,d:14,dy:4,wall:{side:1,width:4},label:'F',name:'종탑 옥상'},
+      {id:'w1',from:'sw',dir:'N',gap:6,w:14,d:22,off:-8,dy:2,name:'서쪽 테라스',slide:{kind:'laundry',axis:'z'}},
+      {id:'w',from:'w1',dir:'N',gap:5,w:18,d:16,off:-1,dy:-2,label:'G',name:'바람의 옥상'},
+      {join:['bw','w']},
+      {id:'nw',from:'w',dir:'N',gap:6,w:16,d:16,off:4,name:'구름다리'},
+      {id:'nw2',from:'nw',dir:'N',gap:6,w:20,d:14,off:7,label:'H',name:'옛 극장 지붕'},
+      {join:['nw2','n']},
+    ]},
   },
   {
     id:'harbor',code:'COURSE 002',name:'하버 라인',latin:'Harbor Line',difficulty:'중급',
-    blurb:'바다 안개가 걷히는 부둣가. 내리막에서 속도를 얼마나 지키는지가 기록을 가릅니다.',
-    place:'HARBOR, AFTER THE FOG',coords:'35°06′ N &nbsp; 129°02′ E &nbsp; / &nbsp; 19:40',
-    tags:['중급','옥상 15개','내리막 활강','슬라이딩 2곳'],storageKey:'roofrunner-records-v3-harbor',theme:HARBOR,
-    // Long descending glides over wide, low warehouse roofs. Speed kept on the way down decides the time.
-    course:buildCourse({x:0,z:0,y:22,w:18,d:20,name:'부둣가 창고'},[
-      {gap:9, dx:0,  dy:-2, w:17,d:19,name:'컨테이너 지붕'},
-      {gap:12,dx:-7, dy:-3, w:17,d:19,name:'크레인 아래'},
-      {gap:13,dx:-8, dy:-3, w:18,d:20,name:'소금 창고'},
-      {gap:9, dx:0,  dy:0,  w:18,d:22,name:'긴 직선',slide:{kind:'duct'}},
-      {gap:12,dx:0,  dy:4,  w:16,d:20,name:'해무의 벽',wall:{side:1,width:16}},
-      {gap:8, dx:4,  dy:0,  w:17,d:19,name:'갈매기 옥상'},
-      {gap:12,dx:9,  dy:-2, w:17,d:19,name:'내리막 지붕'},
-      {gap:13,dx:6,  dy:-3, w:16,d:18,name:'방파제 뷰'},
-      {gap:9, dx:0,  dy:0,  w:16,d:18,name:'등대 앞'},
-      {gap:10,dx:0,  dy:5,  w:16,d:20,name:'등대의 벽',wall:{side:-1,width:16}},
-      {gap:8, dx:-4, dy:0,  w:17,d:19,name:'부두 지붕'},
-      {gap:12,dx:-7, dy:-2, w:17,d:19,name:'마지막 부두',slide:{kind:'laundry'}},
-      {gap:13,dx:-4, dy:-3, w:18,d:20,name:'하역장'},
-      {gap:9, dx:3,  dy:0,  w:22,d:24,name:'도착'},
-    ]),
+    shape:'두 층의 부두',blurb:'위층은 동서로 긴 창고 거리, 아래층은 바다로 뻗은 부두. 뛰어내리기는 쉽고, 돌아오려면 벽을 차야 합니다.',
+    place:'HARBOR, AFTER THE FOG',coords:'35°06′ N &nbsp; 129°02′ E &nbsp; / &nbsp; 19:40',theme:HARBOR,
+    decor:{water:{z:14,lighthouse:[82,74]}},
+    // Two levels: a long warehouse promenade and, below it over the water, a quay with three piers.
+    layout:{start:{x:0,z:0,y:18,w:26,d:20,name:'중앙 창고 · 출발'},steps:[
+      {id:'w1',from:'start',dir:'W',gap:7,w:26,d:16,off:-2,name:'소금 창고',slide:{kind:'duct',axis:'x'}},
+      {id:'w2',from:'w1',dir:'W',gap:7,w:18,d:18,off:2,label:'A',name:'크레인 조종실'},
+      {id:'w3',from:'w2',dir:'W',gap:6,w:24,d:14,off:-3,dy:1,label:'G',name:'어시장 지붕'},
+      {id:'e1',from:'start',dir:'E',gap:6.5,w:26,d:14,off:2,dy:2,name:'냉동 창고',slide:{kind:'laundry',axis:'x'}},
+      {id:'e2',from:'e1',dir:'E',gap:6,w:16,d:18,off:-2,dy:-1,name:'세관 옥상'},
+      {id:'e3',from:'e2',dir:'E',gap:7,w:24,d:14,off:-3,dy:1,label:'B',name:'등대지기 집'},
+      {id:'fog',from:'start',dir:'N',gap:10,w:20,d:16,dy:4,wall:{side:1,extend:0},label:'C',name:'해무 전망대'},
+      {id:'p1',from:'start',dir:'S',gap:11,w:12,d:28,dy:-4,wall:{side:1,extend:0},name:'중앙 부두'},
+      {id:'q1',from:'p1',dir:'E',gap:6,w:30,d:10,name:'방파제 산책로',slide:{kind:'duct',axis:'x'}},
+      {id:'p3',from:'q1',dir:'E',gap:6,w:12,d:30,name:'동쪽 부두'},
+      {join:['e2','p3'],kind:'drop'},
+      {id:'q2',from:'p1',dir:'W',gap:6,w:38,d:10,label:'H',name:'어구 창고'},
+      {id:'p2',from:'q2',dir:'W',gap:6,w:12,d:30,name:'서쪽 부두'},
+      {join:['p2','w2'],wall:{side:-1,extend:0}},
+      {id:'p1b',from:'p1',dir:'S',gap:6,w:12,d:24,dy:2,name:'부두 창고',slide:{kind:'duct',axis:'z'}},
+      {id:'p1c',from:'p1b',dir:'S',gap:6,w:18,d:16,dy:-2,label:'D',name:'중앙 부두 끝'},
+      {id:'p2b',from:'p2',dir:'S',gap:6,w:16,d:18,off:3,label:'E',name:'어선 계류장'},
+      {id:'p3b',from:'p3',dir:'S',gap:6,w:14,d:14,off:-2,dy:1,label:'F',name:'등대 부두'},
+    ]},
   },
   {
     id:'neon',code:'COURSE 003',name:'네온 하이츠',latin:'Neon Heights',difficulty:'고급',
-    blurb:'해가 완전히 진 고층 지구. 좁은 옥상 사이를 지그재그로 넘으며 22m를 올라갑니다.',
-    place:'DOWNTOWN, AFTER DARK',coords:'37°30′ N &nbsp; 127°02′ E &nbsp; / &nbsp; 23:15',
-    tags:['고급','옥상 16개','벽 3곳','슬라이딩 2곳'],storageKey:'roofrunner-records-v3-neon',theme:NEON,
-    // Narrow roofs, short zigzag hops, and three wall sections that climb 22m over the course.
-    course:buildCourse({x:0,z:0,y:26,w:15,d:18,name:'네온 사인'},[
-      {gap:7,  dx:8,  dy:0, w:14,d:17,name:'지그재그 하나'},
-      {gap:7,  dx:-8, dy:1, w:14,d:17,name:'지그재그 둘'},
-      {gap:6.5,dx:8,  dy:1, w:14,d:17,name:'간판 사이'},
-      {gap:6,  dx:0,  dy:0, w:14,d:18,name:'광고판 아래',slide:{kind:'duct'}},
-      {gap:12, dx:0,  dy:4, w:14,d:18,name:'홀로그램 벽',wall:{side:1,width:12,rise:24}},
-      {gap:7,  dx:-4, dy:0, w:14,d:18,name:'옥상 정원'},
-      {gap:7,  dx:8,  dy:1, w:14,d:17,name:'좁은 지붕'},
-      {gap:6,  dx:0,  dy:0, w:14,d:18,name:'전광판 골목',slide:{kind:'laundry'}},
-      {gap:10, dx:0,  dy:5, w:14,d:18,name:'전광판 벽',wall:{side:-1,width:12,rise:24}},
-      {gap:7,  dx:4,  dy:0, w:14,d:18,name:'헬리패드'},
-      {gap:7,  dx:-8, dy:1, w:14,d:18,name:'지그재그 셋'},
-      {gap:6,  dx:0,  dy:0, w:14,d:18,name:'마지막 골목'},
-      {gap:12, dx:0,  dy:4, w:14,d:18,name:'정상의 벽',wall:{side:1,width:12,rise:26}},
-      {gap:7,  dx:4,  dy:-1,w:15,d:18,name:'전망대'},
-      {gap:9,  dx:-4, dy:0, w:20,d:22,name:'도착'},
-    ]),
+    shape:'나선 고층',blurb:'좁은 옥상이 벽을 차며 나선으로 16m를 오릅니다. 꼭대기에서 떨어지면 출발점, 바깥 골목은 낙하로만 닿습니다.',
+    place:'DOWNTOWN, AFTER DARK',coords:'37°30′ N &nbsp; 127°02′ E &nbsp; / &nbsp; 23:15',theme:NEON,
+    decor:{spire:true},
+    // A tight spiral that climbs around an empty core, with low alleys hanging off it that you drop into.
+    layout:{start:{x:0,z:24,y:26,w:16,d:14,name:'네온 광장 · 출발'},steps:[
+      {id:'n1',from:'start',dir:'W',gap:6,w:14,d:16,off:-2,dy:2,name:'편의점 옥상'},
+      {id:'n2',from:'n1',dir:'N',gap:6,w:12,d:30,off:1,dy:2,name:'광고판 골목',slide:{kind:'duct',axis:'z'}},
+      {id:'n3',from:'n2',dir:'N',gap:6,w:16,d:14,label:'A',name:'홀로그램 옥상'},
+      {id:'n4',from:'n3',dir:'E',gap:10,w:12,d:14,dy:4,wall:{side:1,width:6,rise:22,extend:0},name:'전광판 벽'},
+      {id:'n5',from:'n4',dir:'E',gap:6,w:14,d:14,off:2,dy:2,label:'B',name:'헬리패드'},
+      {id:'n6',from:'n5',dir:'S',gap:6,w:14,d:28,off:1,dy:2,name:'네온 덕트',slide:{kind:'laundry',axis:'z',at:-2.3}},
+      {id:'n7',from:'n6',dir:'S',gap:10,w:14,d:12,dy:4,wall:{side:-1,width:6,rise:22},label:'C',name:'네온 왕관'},
+      {join:['n7','start'],kind:'drop'},
+      {id:'o1',from:'n1',dir:'W',gap:10,w:16,d:16,dy:-5,wall:{side:1,width:6,extend:0},label:'D',name:'노래방 간판'},
+      {id:'o2',from:'n5',dir:'E',gap:12,w:18,d:18,off:6,dy:-8,label:'E',name:'파친코 옥상'},
+      {id:'o2a',from:'o2',dir:'S',gap:6,w:14,d:14,off:-4,dy:-2,name:'골목 지붕'},
+      {id:'o2b',from:'o2a',dir:'S',gap:6,w:14,d:14,off:-2,label:'F',name:'라멘집 옥상'},
+      {id:'o2c',from:'o2b',dir:'S',gap:8,w:14,d:14,name:'전선 지붕'},
+      {id:'o2d',from:'o2c',dir:'W',gap:8,w:16,d:14,off:7,name:'노점 지붕'},
+      {id:'o2e',from:'o2d',dir:'W',gap:6,w:14,d:14,label:'G',name:'포장마차 지붕'},
+      {join:['o2e','start']},
+      {id:'o3',from:'n4',dir:'N',gap:11,w:16,d:16,off:-3,dy:-6,label:'H',name:'옛 극장'},
+      {id:'o3a',from:'o3',dir:'W',gap:6,w:20,d:14,dy:-2,name:'극장 매표소'},
+      {id:'o3b',from:'o3a',dir:'W',gap:6,w:14,d:30,off:8,name:'뒷골목 차양'},
+      {id:'o3c',from:'o3b',dir:'S',gap:6,w:14,d:18,dy:-1,name:'환풍기 지붕'},
+      {id:'o3d',from:'o3c',dir:'S',gap:6,w:14,d:12,name:'비상구 지붕'},
+      {join:['o3d','o1'],kind:'drop'},
+    ]},
   },
   {
     id:'dawn',code:'COURSE 004',name:'새벽 언덕',latin:'Dawn Hills',difficulty:'스프린트',
-    blurb:'옅은 안개가 깔린 내리막 코스. 게임에서 가장 긴 도약들이 이어집니다.',
-    place:'HILLSIDE, BEFORE SUNRISE',coords:'37°35′ N &nbsp; 126°59′ E &nbsp; / &nbsp; 05:24',
-    tags:['스프린트','옥상 11개','긴 활강','슬라이딩 2곳'],storageKey:'roofrunner-records-v3-dawn',theme:DAWN,
-    // Wide roofs and the longest gaps in the game: a downhill sprint with one climb in the middle.
-    course:buildCourse({x:0,z:0,y:34,w:20,d:22,name:'새벽 첫 발'},[
-      {gap:13,dx:0,  dy:-3, w:18,d:20,name:'긴 활강'},
-      {gap:13,dx:7,  dy:-3, w:18,d:20,name:'지붕 계단'},
-      {gap:14,dx:8,  dy:-4, w:18,d:20,name:'두 번째 활강'},
-      {gap:10,dx:0,  dy:0,  w:18,d:22,name:'물탱크 길',slide:{kind:'awning'}},
-      {gap:10,dx:0,  dy:5,  w:17,d:20,name:'해 뜨는 벽',wall:{side:1,width:15}},
-      {gap:12,dx:-4, dy:-2, w:18,d:20,name:'언덕 위'},
-      {gap:14,dx:-7, dy:-4, w:18,d:20,name:'마지막 활강'},
-      {gap:13,dx:-5, dy:-3, w:18,d:20,name:'넓은 지붕',slide:{kind:'awning'}},
-      {gap:12,dx:4,  dy:-2, w:18,d:20,name:'골목 위'},
-      {gap:10,dx:5,  dy:0,  w:22,d:24,name:'도착'},
-    ]),
+    shape:'비탈 계단',blurb:'북서 꼭대기에서 남동 기차역까지 21m를 내려가는 비탈. 내리막은 긴 활강 한 줄, 오르막은 좁은 계단길입니다.',
+    place:'HILLSIDE, BEFORE SUNRISE',coords:'37°35′ N &nbsp; 126°59′ E &nbsp; / &nbsp; 05:24',theme:DAWN,
+    decor:{slope:{x:-1,z:-1}},
+    // A hillside: one fast downhill line of long drops, and switchback stairways to climb back up.
+    layout:{start:{x:0,z:0,y:27,w:24,d:22,name:'언덕 중턱 · 출발'},steps:[
+      {id:'u1',from:'start',dir:'N',gap:6,w:14,d:12,off:-6,dy:2,name:'돌계단 지붕'},
+      {id:'u2',from:'u1',dir:'W',gap:6,w:24,d:14,off:-2,dy:2,name:'온실 테라스'},
+      {id:'u3',from:'u2',dir:'N',gap:6,w:14,d:12,off:6,dy:2,label:'A',name:'장독대'},
+      {id:'u4',from:'u3',dir:'W',gap:10,w:16,d:14,dy:4,wall:{side:-1,width:4,extend:0},name:'해 뜨는 벽'},
+      {id:'top',from:'u4',dir:'N',gap:6,w:22,d:18,off:4,dy:2,label:'B',name:'언덕 꼭대기'},
+      {id:'f1',from:'top',dir:'E',gap:12,w:28,d:18,off:2,dy:-4,name:'긴 활강',slide:{kind:'awning',axis:'x',at:2}},
+      {id:'f2',from:'f1',dir:'E',gap:8,w:24,d:16,off:4,dy:-3,label:'C',name:'풍차 지붕'},
+      {id:'f3',from:'f2',dir:'S',gap:12,w:20,d:28,off:6,dy:-4,name:'차양 거리',slide:{kind:'awning',axis:'z',at:2}},
+      {id:'f4',from:'f3',dir:'S',gap:8,w:22,d:20,off:4,dy:-3,label:'D',name:'과수원 옥상'},
+      {join:['start','f4'],kind:'drop'},
+      {id:'f5',from:'f4',dir:'E',gap:12,w:20,d:20,off:6,dy:-4,name:'마지막 활강'},
+      {id:'f6',from:'f5',dir:'S',gap:12,w:24,d:22,off:-6,dy:-3,label:'E',name:'언덕 아래 역'},
+      {id:'v1',from:'f6',dir:'W',gap:6,w:30,d:14,off:4,dy:2,name:'기찻길 지붕',slide:{kind:'awning',axis:'x'}},
+      {id:'v2',from:'v1',dir:'W',gap:6,w:18,d:16,off:-3,label:'F',name:'우체국 옥상'},
+      {id:'v3',from:'v2',dir:'N',gap:6,w:14,d:12,off:1,dy:2,name:'골목 계단'},
+      {join:['v3','start'],wall:{side:1,width:3.5,extend:0}},
+      {id:'g1',from:'v2',dir:'W',gap:6,w:22,d:16,off:2,label:'G',name:'성당 마당'},
+      {id:'g2',from:'g1',dir:'N',gap:6,w:16,d:16,off:-4,dy:2,name:'골목 끝'},
+      {id:'g3',from:'g2',dir:'N',gap:6,w:18,d:20,off:-5,dy:1,label:'H',name:'언덕 학교'},
+    ]},
   },
 ];
-// Reuse each district's named roofs, themes and slide structures in an open city block.
-// Array order is an identifier only: there is no prescribed route through these coordinates.
-export function buildDistrict(template,variant=0){
-  const spacing=31,base=template[0].y;
-  const targets=[[-2,-2],[0,-2],[2,-2],[2,0],[2,2],[0,2],[-2,2],[-2,0]];
-  const course=[{x:0,z:0,y:base,w:24,d:24,name:'센트럴 루프 · 출발',gx:0,gz:0,required:false}];
-  const originals=template.filter(p=>!p.wall&&p.name!=='도착').slice(1);
-  const slides=template.filter(p=>p.slide).map(p=>p.slide);
-  for(let gz=-2;gz<=2;gz++)for(let gx=-2;gx<=2;gx++){
-    if(gx===0&&gz===0)continue;
-    const target=targets.findIndex(([x,z])=>x===gx&&z===gz);
-    const terracing=variant===1?Math.abs(gx)*.65:variant===2?Math.abs(gx+gz)*.55:variant===3?Math.abs(gz)*.75:(Math.abs(gx)+Math.abs(gz))*.45;
-    course.push({x:gx*spacing,z:gz*spacing,y:base+terracing,w:22,d:22,gx,gz,required:target>=0,
-      label:target>=0?String.fromCharCode(65+target):null,
-      name:target>=0?(originals[(target+variant)%originals.length]?.name||'스카이 테라스'):`연결 옥상 ${gx+3}-${gz+3}`});
-  }
-  // Keep two north-facing wall alleys, now shortcuts inside a network of alternative approaches.
-  for(const gx of [0,2]){
-    const exit=course.find(p=>p.gx===gx&&p.gz===-2),from=course.findIndex(p=>p.gx===gx&&p.gz===-1);
-    exit.y=course[from].y+4;exit.wall={from,side:gx===0?1:-1,width:7.5,rise:18};exit.climb=true;
-  }
-  // Existing duct / laundry / awning designs and their collision clearances are retained.
-  [[-1,0],[1,0],[-1,2],[1,-1]].forEach(([gx,gz],i)=>{
-    const roof=course.find(p=>p.gx===gx&&p.gz===gz);
-    roof.slide={...slides[i%slides.length],offset:7,kind:slides[i%slides.length]?.kind||'duct'};
-  });
-  return course;
-}
-for(const [variant,map] of MAPS.entries()){
-  map.course=buildDistrict(map.course,variant);
-  map.tags=[map.difficulty,'필수 8곳','자유 경로','슬라이딩 4곳'];
-  map.storageKey=`roofrunner-records-v4-explore-${map.id}`;
-  map.blurb=['노을빛 광장에서 사방으로. 여덟 옥상을 잇는 나만의 최단 경로.', '항구 창고 사이를 자유롭게 넘나들며 여덟 전망점을 방문하세요.', '네온이 빛나는 고층 지구. 골목과 벽을 이용해 나만의 경로를 찾으세요.', '새벽빛 언덕에 흩어진 여덟 옥상. 높낮이와 지름길을 이용하세요.'][variant];
+for(const map of MAPS){
+  const {course,walls}=buildDistrict(map.layout);
+  map.course=course;map.walls=walls;
+  const slides=course.filter(p=>p.slide).length;
+  map.tags=[map.difficulty,map.shape,`벽 ${walls.length}곳`,`슬라이딩 ${slides}곳`];
+  map.storageKey=`roofrunner-records-v5-${map.id}`;
 }
 export function districtBounds(course){return {minX:Math.min(...course.map(p=>p.x-p.w/2)),maxX:Math.max(...course.map(p=>p.x+p.w/2)),minZ:Math.min(...course.map(p=>p.z-p.d/2)),maxZ:Math.max(...course.map(p=>p.z+p.d/2))};}
-export function neighbors(course,index){const p=course[index];return course.map((q,i)=>({q,i})).filter(({q,i})=>i!==index&&Math.abs(q.gx-p.gx)+Math.abs(q.gz-p.gz)===1).map(({i})=>i);}
+export function neighbors(course,index){return course[index].links;}
 function makeColliders(course,towers,gates){
   return [
     ...course.map((p,index)=>({minX:p.x-p.w/2,maxX:p.x+p.w/2,minZ:p.z-p.d/2,maxZ:p.z+p.d/2,bottom:0,top:p.y,index})),
@@ -240,22 +272,24 @@ function makeColliders(course,towers,gates){
 // Live bindings: selecting a map swaps the course for every module that imported these.
 export let activeMap = MAPS[0];
 export let COURSE = activeMap.course;
-export let TOWERS = buildTowers(COURSE);
+export let WALLS = activeMap.walls;
+export let TOWERS = buildTowers(COURSE,WALLS);
 export let GATES = buildGates(COURSE);
 export let colliders = makeColliders(COURSE,TOWERS,GATES);
 export function selectMap(id){
   const map=MAPS.find(m=>m.id===id)||MAPS[0];
-  activeMap=map;COURSE=map.course;TOWERS=buildTowers(COURSE);GATES=buildGates(COURSE);
+  activeMap=map;COURSE=map.course;WALLS=map.walls;TOWERS=buildTowers(COURSE,WALLS);GATES=buildGates(COURSE);
   colliders=makeColliders(COURSE,TOWERS,GATES);
   return map;
 }
 export const BODY = { radius:.36, height:1.7, gravity:28, jump:12.8, walk:12, sprint:19.5, wallKick:11.5, wallJump:13, energy:1.8, slideBoost:3.5, slideMax:25, slideDuration:.95 };
 export function createPlayer(index=0) {
   const r=COURSE[index];
-  // Respawning on a roof with a low structure starts you at its back edge, with room to get up to
-  // speed and go down into the slide — the same run-up you would have had coming off the last jump.
-  const back=index===0?4:r.slide?r.d/2-1.5:0;
-  return {x:r.x,y:r.y,z:r.z+back,vx:0,vy:0,vz:0,grounded:true,roof:index,energy:BODY.energy,coyote:.12,jumpBuffer:0,angle:0,surface:'roof',
+  // Respawning on a roof with a low structure starts you at the far end from it along the lane it
+  // blocks, with room to get up to speed and go down into the slide.
+  let x=r.x,z=r.z+(index===0?4:0);
+  if(index&&r.slide){const sign=(r.slide.at||0)>0?-1:1;if(r.slide.axis==='x')x+=sign*(r.w/2-1.5);else z+=sign*(r.d/2-1.5);}
+  return {x,y:r.y,z,vx:0,vy:0,vz:0,grounded:true,roof:index,energy:BODY.energy,coyote:.12,jumpBuffer:0,angle:0,surface:'roof',
     wall:null,wallGrace:0,wallRunning:false,lastWallId:-1,wallCooldown:0,kickLock:0,wallJumps:0,
     sliding:false,slideTime:0,slideCooldown:0,slideWasHeld:false};
 }

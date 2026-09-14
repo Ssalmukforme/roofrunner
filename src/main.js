@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import './style.css';
 import { createRun, tickRun, visitRoof, nearestUnvisited } from './exploration.js';
-import { MAPS, COURSE, TOWERS, GATES, GATE, BODY, selectMap, createPlayer, stepPlayer, formatTime, sanitizeRecords, districtBounds, neighbors } from './physics.js';
+import { MAPS, COURSE, TOWERS, WALLS, GATES, GATE, BODY, selectMap, createPlayer, stepPlayer, formatTime, sanitizeRecords, districtBounds, neighbors, linkGeometry } from './physics.js';
 
 const $ = (selector) => document.querySelector(selector);
 const canvas = $('#world');
@@ -40,6 +40,9 @@ let seed=87;function rand(){seed=(seed*16807)%2147483647;return(seed-1)/21474836
 const windowMatrices=[];const litMatrices=[];const dummy=new THREE.Object3D();
 function queueWindow(x,y,z,w,h,d,lit=false){dummy.position.set(x,y,z);dummy.scale.set(w,h,d);dummy.rotation.set(0,0,0);dummy.updateMatrix();(lit?litMatrices:windowMatrices).push(dummy.matrix.clone());}
 function arrow(x,y,z,angle,parent,color,scale=1){const shape=new THREE.Shape();shape.moveTo(0,.9);shape.lineTo(.7,-.05);shape.lineTo(.26,-.05);shape.lineTo(.26,-.85);shape.lineTo(-.26,-.85);shape.lineTo(-.26,-.05);shape.lineTo(-.7,-.05);shape.closePath();const m=new THREE.Mesh(new THREE.ShapeGeometry(shape),new THREE.MeshBasicMaterial({color,side:THREE.DoubleSide}));m.rotation.set(-Math.PI/2,0,-angle);m.position.set(x,y,z);m.scale.setScalar(scale);parent.add(m);return m;}
+// A group turned so that its local -z points along a travel direction; walls and slide frames are
+// drawn once in that frame and work whichever way the route runs.
+function oriented(parent,x,z,[dx,dz]){const g=new THREE.Group();g.position.set(x,0,z);g.rotation.y=Math.atan2(-dx,-dz);parent.add(g);return g;}
 function labelSprite(text,color='#ffecce',size=1){const c=document.createElement('canvas');c.width=512;c.height=128;const ctx=c.getContext('2d');ctx.font='700 52px Arial';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle=color;ctx.fillText(text,256,64);const texture=new THREE.CanvasTexture(c);const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:texture,transparent:true,depthWrite:false}));sprite.scale.set(7*size,1.75*size,1);return sprite;}
 
 // ---------------------------------------------------------------- world build
@@ -69,7 +72,12 @@ function buildWorld(map){
   const bounds=districtBounds(COURSE),zNear=bounds.maxZ,zFar=bounds.minZ,midZ=(zNear+zFar)/2,span=zNear-zFar;
   const city=new THREE.Group(),routeGroup=new THREE.Group(),props=new THREE.Group();
   worldRoot.add(city,routeGroup,props);
-  box(0,-1,midZ,3000,2,3000,t.ground,city,false);
+  const decor=map.decor||{};
+  const inWater=(x,z)=>!!decor.water&&z>decor.water.z;
+  const inPlaza=(x,z)=>!!decor.plaza&&Math.hypot(x-decor.plaza.x,z-decor.plaza.z)<decor.plaza.r;
+  // The hillside rises toward one corner; the city steps up with it instead of sitting on a flat plate.
+  const hill=(x,z)=>decor.slope?THREE.MathUtils.clamp(Math.round(((decor.slope.x*x+decor.slope.z*z)*.12+5)/3)*3,0,18):0;
+  groundFor(t,decor,city,midZ,bounds);
   const placed=[];
   function building(x,z,w,d,h,color,detail=true){
     box(x,h/2,z,w,h,d,color,city,false);
@@ -90,14 +98,19 @@ function buildWorld(map){
     const x=gx*24+between(-2,2),z=gz*26+between(-2,2),w=between(12,19),d=between(13,20);
     if(COURSE.some(p=>Math.abs(p.x-x)<(p.w+w)/2+3&&Math.abs(p.z-z)<(p.d+d)/2+3))continue;
     if(TOWERS.some(p=>Math.abs(p.x-x)<(p.w+w)/2+2&&Math.abs(p.z-z)<(p.d+d)/2+2))continue;
+    if(inWater(x,z+d/2)||inPlaza(x,z))continue;
     const proximity=x>bounds.minX-25&&x<bounds.maxX+25&&z>zFar-28&&z<zNear+28;
     let h=proximity?between(...t.heights.near):between(...t.heights.far);
     if(z<zFar-45)h=between(...t.heights.back);
+    // On the hillside the houses follow the ground, so the top of the course looks down over them.
+    if(decor.slope)h=between(...t.heights.near)+hill(x,z);
     building(x,z,w,d,h,t.facades[Math.floor(rand()*t.facades.length)],true);
   }
   // Distant skyline stays simple, letting the playable rooftops read clearly.
   for(let i=0;i<54;i++){const x=between(-310,280),z=between(zFar-270,zFar-160),h=between(28,112);building(x,z,between(13,25),between(13,24),h,t.skyline,false);if(i%7===0)box(x,h+6,z,1,12,1,t.skyline,city,false);}
-  for(let x=-168;x<=168;x+=24){box(x+12,.04,midZ,4,.06,span+330,t.street,city,false);for(let z=zFar-125;z<=zNear+105;z+=17)box(x+12,.09,z,.15,.04,3,t.streetMark,city,false);}
+  const streetEnd=decor.water?decor.water.z:zNear+165,streetStart=zFar-165;
+  // Straight avenues belong to the flat districts; the hillside is terraces instead.
+  if(!decor.slope)for(let x=-168;x<=168;x+=24){box(x+12,.04,(streetStart+streetEnd)/2,4,.06,streetEnd-streetStart,t.street,city,false);for(let z=zFar-125;z<=streetEnd-6;z+=17)box(x+12,.09,z,.15,.04,3,t.streetMark,city,false);}
   COURSE.forEach((p,i)=>{
     box(p.x,p.y/2,p.z,p.w,p.y,p.d,t.roofTops[i%4],routeGroup);
     box(p.x,p.y-.2,p.z,p.w+.38,.45,p.d+.38,t.roofBand,routeGroup);
@@ -116,21 +129,26 @@ function buildWorld(map){
       const diamond=new THREE.Mesh(new THREE.OctahedronGeometry(.35),new THREE.MeshBasicMaterial({color:t.takeoff}));diamond.position.y=-1.1;beacon.add(diamond);
       beacon.userData={index:i,baseY:p.y+6.5};objectiveBeacons.push(beacon);
     }else if(i===0){const label=labelSprite('FREE ROUTE',t.label,.48);label.position.set(p.x,p.y+1.2,p.z-7);routeGroup.add(label);}
+    // Edge arrows show every way off this roof: mint goes both ways, orange is a drop you cannot climb back.
     for(const n of neighbors(COURSE,i)){
-      const q=COURSE[n],a=Math.atan2(q.x-p.x,-(q.z-p.z)),distance=(q.x===p.x?p.d:p.w)/2-2.2;
-      arrow(p.x+Math.sin(a)*distance,p.y+.07,p.z-Math.cos(a)*distance,a,routeGroup,t.accent,.85);
-    }
-    // The facade you kick up is marked on the building itself: a recessed service bay, painted edges,
-    // rungs and a grab rail at the lip. Nothing is built out into the air.
-    if(p.climb&&i){
-      const front=p.z+p.d/2+.06,low=COURSE[p.wall.from??i-1].y-7,high=p.y+.2,width=Math.min(p.w-2,10);
-      box(p.x,(low+high)/2,front,width,high-low,.14,t.climbWall,routeGroup);
-      for(const s of [-1,1])box(p.x+s*(width/2-.45),(low+high)/2,front+.08,.5,high-low,.1,t.takeoff,routeGroup);
-      for(let y=low+1.7;y<high-.7;y+=1.9)box(p.x,y,front+.08,width-2.6,.22,.1,t.climbRung,routeGroup);
-      box(p.x,p.y+.22,p.z+p.d/2-.16,width*.5,.2,.55,t.climbRung,routeGroup);
+      const q=COURSE[n],g=linkGeometry(p,q);if(!g)continue;
+      const [dx,dz]=g.dir,a=Math.atan2(dx,-dz),distance=(g.axis==='z'?p.d:p.w)/2-2.2,oneWay=!q.links.includes(i);
+      arrow(p.x+dx*distance,p.y+.07,p.z+dz*distance,a,routeGroup,oneWay?t.takeoff:t.accent,oneWay?1:.85);
+      if(oneWay)arrow(p.x+dx*(distance-1.3),p.y+.07,p.z+dz*(distance-1.3),a,routeGroup,t.takeoff,.7);
     }
     roofProps(i,p,t,routeGroup);
   });
+  // The facade you kick up is marked on the building itself: a recessed service bay, painted edges,
+  // rungs and a grab rail at the lip. Nothing is built out into the air.
+  for(const wall of WALLS){
+    const b=COURSE[wall.to],alongZ=wall.axis==='z',g=oriented(routeGroup,b.x,b.z,wall.dir);
+    const front=(alongZ?b.d:b.w)/2+.06,low=COURSE[wall.from].y-7,high=b.y+.2,width=Math.min((alongZ?b.w:b.d)-2,10);
+    box(0,(low+high)/2,front,width,high-low,.14,t.climbWall,g);
+    for(const s of [-1,1])box(s*(width/2-.45),(low+high)/2,front+.08,.5,high-low,.1,t.takeoff,g);
+    for(let y=low+1.7;y<high-.7;y+=1.9)box(0,y,front+.08,width-2.6,.22,.1,t.climbRung,g);
+    box(0,b.y+.22,front-.22,width*.5,.2,.55,t.climbRung,g);
+  }
+  districtDecor(t,decor,props,bounds);
   for(const gate of GATES)slideGate(gate,COURSE[gate.index],t,routeGroup);
   // Wall sections are neighbouring buildings that simply rise higher than the course. You run along
   // their side and kick off it; nothing is added to the rooftops themselves.
@@ -162,41 +180,63 @@ function tube(x,y,z,length,radius,color,parent,axis='x',sides=8){
 // Rooftop services strung across the run line: too low to run under, so you drop into a slide. The
 // lane beside the posts stays open for anyone who would rather go around and lose the time.
 function slideGate(gate,p,t,parent){
-  const half=gate.w/2,bottom=gate.bottom,top=gate.top,mid=(bottom+top)/2;
+  // Drawn across local x at local z=0; the frame is turned to face the lane it blocks.
+  const g=oriented(parent,gate.x,gate.z,gate.axis==='z'?[0,-1]:[1,0]);
+  const half=gate.span/2,bottom=gate.bottom,top=gate.top,mid=(bottom+top)/2,y0=p.y;
   for(const s of [-1,1]){
-    box(p.x+s*half,(p.y+top)/2,gate.z,.26,top-p.y,.3,t.climbWall,parent);
-    box(p.x+s*half,p.y+.11,gate.z,.85,.22,1.05,t.climbWall,parent);
-    box(p.x+s*(half-.45),mid+.55,gate.z,.9,.14,.14,t.climbWall,parent);
+    box(s*half,(y0+top)/2,0,.26,top-y0,.3,t.climbWall,g);
+    box(s*half,y0+.11,0,.85,.22,1.05,t.climbWall,g);
+    box(s*(half-.45),mid+.55,0,.9,.14,.14,t.climbWall,g);
   }
   // Hazard bar at the clearance line — the thing you would hit on your feet.
-  box(p.x,bottom+.28,gate.z,gate.w,.5,.5,t.takeoff,parent);
-  for(let x=-half+.9;x<half-.5;x+=1.7)box(p.x+x,bottom+.28,gate.z-.27,.75,.52,.06,t.stripe,parent);
+  box(0,bottom+.28,0,gate.span,.5,.5,t.takeoff,g);
+  for(const face of [-.27,.27])for(let x=-half+.9;x<half-.5;x+=1.7)box(x,bottom+.28,face,.75,.52,.06,t.stripe,g);
   if(gate.kind==='duct'){
-    tube(p.x,mid+.55,gate.z,gate.w,.5,t.shed,parent);
-    for(let x=-half+1.5;x<half-1;x+=2.6)tube(p.x+x,mid+.55,gate.z,.18,.58,t.crownInner,parent);
-    box(p.x,top-.1,gate.z,gate.w*.55,.34,1.5,t.shed,parent);
-    for(const s of [-1,1])tube(p.x+s*(half-1.7),mid+.55,gate.z+.8,1.2,.13,t.climbWall,parent,'z');
+    tube(0,mid+.55,0,gate.span,.5,t.shed,g);
+    for(let x=-half+1.5;x<half-1;x+=2.6)tube(x,mid+.55,0,.18,.58,t.crownInner,g);
+    box(0,top-.1,0,gate.span*.55,.34,1.5,t.shed,g);
+    for(const s of [-1,1])tube(s*(half-1.7),mid+.55,.8,1.2,.13,t.climbWall,g,'z');
   }else if(gate.kind==='laundry'){
-    box(p.x,mid+.55,gate.z,gate.w,.16,.16,t.climbWall,parent);
+    box(0,mid+.55,0,gate.span,.16,.16,t.climbWall,g);
     const cloth=['#e7d9c5','#cf8f7a','#8fa9c0','#dcc98f','#b9c3ab'];
-    for(const line of [-.55,.55])tube(p.x,top-.12,gate.z+line,gate.w,.06,t.climbWall,parent);
+    for(const line of [-.55,.55])tube(0,top-.12,line,gate.span,.06,t.climbWall,g);
     for(let j=0,x=-half+1.3;x<half-.9;x+=1.85,j++){
       const h=.85+(j%3)*.22;
-      box(p.x+x,top-.12-h/2,gate.z-.55,1.35,h,.05,cloth[j%cloth.length],parent);
-      if(j%2)box(p.x+x+.6,top-.12-h*.4,gate.z+.55,1.15,h*.8,.05,cloth[(j+2)%cloth.length],parent);
+      box(x,top-.12-h/2,-.55,1.35,h,.05,cloth[j%cloth.length],g);
+      if(j%2)box(x+.6,top-.12-h*.4,.55,1.15,h*.8,.05,cloth[(j+2)%cloth.length],g);
     }
   }else{
-    box(p.x,top-.06,gate.z-.2,gate.w,.16,2.8,t.parapetCap,parent);
-    for(let x=-half+1;x<half-.6;x+=1.5)box(p.x+x,top-.18,gate.z-.2,.5,.14,2.8,t.takeoff,parent);
-    for(const s of [-1,1])box(p.x+s*(half-.25),mid+.45,gate.z-1.3,.12,top-bottom,.12,t.climbWall,parent);
+    box(0,top-.06,0,gate.span,.16,2.8,t.parapetCap,g);
+    for(let x=-half+1;x<half-.6;x+=1.5)box(x,top-.18,0,.5,.14,2.8,t.takeoff,g);
+    for(const s of [-1,1])for(const z of [-1.1,1.1])box(s*(half-.25),mid+.45,z,.12,top-bottom,.12,t.climbWall,g);
   }
-  // Painted run-up telling you where to go down.
-  box(p.x,p.y+.06,gate.z+3.8,gate.w*.8,.06,.5,t.takeoff,parent);
-  for(let j=0;j<3;j++)box(p.x,p.y+.06,gate.z+2.6-j*.95,gate.w*.55-j*1.2,.06,.3,t.wallTrim,parent);
-  const label=labelSprite('SLIDE · SHIFT',t.wallTrim,.6);label.position.set(p.x,p.y+2.4,gate.z+4.8);parent.add(label);
+  // Painted run-ups on both sides telling you where to go down.
+  for(const side of [-1,1]){
+    box(0,y0+.06,side*3.8,gate.span*.8,.06,.5,t.takeoff,g);
+    for(let j=0;j<3;j++)box(0,y0+.06,side*(2.6-j*.95),gate.span*.55-j*1.2,.06,.3,t.wallTrim,g);
+  }
+  const label=labelSprite('SLIDE · SHIFT',t.wallTrim,.6);label.position.set(0,top+.9,0);g.add(label);
 }
-// Rooftop furniture is kept at the sides, outside the marked run line, and differs by district.
+// Rooftop furniture stays out of the lanes that cross a roof. Roofs crossed one way get furniture along
+// the other two edges; roofs crossed both ways only get it in the corners.
 function roofProps(i,p,t,parent){
+  const axes=new Set(COURSE.flatMap((q,j)=>j!==i&&(p.links.includes(j)||q.links.includes(i))?[linkGeometry(p,q)?.axis]:[]).filter(Boolean));
+  if(axes.has('x')&&axes.has('z')){
+    const corner=(sx,sz)=>[p.x+sx*(p.w/2-2.4),p.z+sz*(p.d/2-2.4)],[ax,az]=corner(-1,-1),[bx,bz]=corner(1,1);
+    if(t.props==='crate'){for(const [x,z] of [[ax,az],[bx,bz]]){box(x,p.y+.55,z,2.2,1.1,2.2,'#6f7f86',parent);box(x+.3,p.y+1.35,z-.2,1.6,.5,1.6,'#8a6a4e',parent);}}
+    else if(t.props==='unit'){for(const [x,z] of [[ax,az],[bx,bz]]){box(x,p.y+.65,z,2.4,1.3,2,'#7e7a8e',parent);cylinder(x,p.y+1.37,z,.58,.58,.16,'#4c4860',parent,10);}}
+    else if(t.props==='green'){for(const [x,z] of [[ax,az],[bx,bz]]){box(x,p.y+.3,z,1.6,.6,1.6,'#a89a86',parent);const plant=new THREE.Mesh(new THREE.IcosahedronGeometry(.7,0),material('#93a98d'));plant.position.set(x,p.y+.9,z);plant.scale.y=.72;parent.add(plant);}}
+    else {waterTank(ax,p.y,az,.6,parent,t);box(bx,p.y+.6,bz,2.2,1.2,2,'#939392',parent);}
+    return;
+  }
+  if(axes.has('x')){
+    // Draw the north–south layout in a frame turned a quarter, so the furniture lines the long edges.
+    const g=oriented(parent,p.x,p.z,[1,0]);
+    return roofPropsAlongZ(i,{...p,x:0,z:0,w:p.d,d:p.w},t,g);
+  }
+  return roofPropsAlongZ(i,p,t,parent);
+}
+function roofPropsAlongZ(i,p,t,parent){
   const left=p.x-p.w/2+2.4,right=p.x+p.w/2-2.2,back=p.z+p.d/2-3;
   if(t.props==='crate'){
     for(let j=0;j<3;j++){const h=1.1+(j%2)*.5;box(left+(j%2)*1.1,p.y+h/2,p.z-3+j*2.6,2.2,h,2.2,j%2?'#8a6a4e':'#6f7f86',parent);}
@@ -218,47 +258,92 @@ function roofProps(i,p,t,parent){
 // Paint, a fire escape and drain pipes on the alley face: the runnable side reads as maintenance
 // hardware on a real building rather than as a prop dropped onto the course.
 function towerFace(tower,t,parent){
-  const dir=tower.side,face=tower.x-dir*tower.w/2,off=face-dir*.08;
+  // Local frame: travel runs toward -z, local x is the alley's right-hand side.
+  const g=oriented(parent,tower.x,tower.z,tower.dir);
+  const dir=tower.side,face=-dir*tower.width/2,off=face-dir*.08,length=tower.span;
   const low=Math.min(tower.entryY,tower.exitY),high=Math.max(tower.entryY,tower.exitY);
-  const back=tower.z+tower.d/2,front=tower.z-tower.d/2;
-  box(off,tower.entryY+2.5,tower.z,.16,.5,tower.d*.97,t.wallTrim,parent);
-  box(off,tower.entryY+2.5-.42,tower.z,.13,.16,tower.d*.97,t.wallRung,parent);
-  for(let z=front+1.6;z<back-1;z+=3.4)box(off,tower.entryY+4.6,z,.12,1.2,.26,t.wallRung,parent);
+  const back=length/2,front=-length/2;
+  box(off,tower.entryY+2.5,0,.16,.5,length*.97,t.wallTrim,g);
+  box(off,tower.entryY+2.5-.42,0,.13,.16,length*.97,t.wallRung,g);
+  for(let z=front+1.6;z<back-1;z+=3.4)box(off,tower.entryY+4.6,z,.12,1.2,.26,t.wallRung,g);
   // Fire escape at the far end of the alley, climbing to the roof you land on.
   const lz=front+1.4,rail=high-low+11;
-  for(const s of [-1,1])box(off,low+rail/2-4,lz+s*.45,.12,rail,.12,t.climbWall,parent);
-  for(let y=low-4;y<high+2;y+=1.15)box(off,y,lz,.14,.1,.9,t.climbRung,parent);
-  box(off-dir*.3,high+1.2,lz,.75,.12,1.3,t.climbWall,parent);
+  for(const s of [-1,1])box(off,low+rail/2-4,lz+s*.45,.12,rail,.12,t.climbWall,g);
+  for(let y=low-4;y<high+2;y+=1.15)box(off,y,lz,.14,.1,.9,t.climbRung,g);
+  box(off-dir*.3,high+1.2,lz,.75,.12,1.3,t.climbWall,g);
   // Drain pipes and a couple of service brackets down the rest of the face.
-  cylinder(off,tower.entryY-9,back-2.4,.17,.17,34,t.climbWall,parent,6);
-  for(let y=tower.entryY-8;y<tower.entryY+6;y+=4.5)box(off,y,back-2.4,.42,.16,.42,t.climbWall,parent);
+  cylinder(off,tower.entryY-9,back-2.4,.17,.17,34,t.climbWall,g,6);
+  for(let y=tower.entryY-8;y<tower.entryY+6;y+=4.5)box(off,y,back-2.4,.42,.16,.42,t.climbWall,g);
   if(tower.lead){
-    box(off,tower.entryY+8.4,tower.z,.1,2.6,7,t.wall,parent);
-    const label=labelSprite('WALL RUN →',t.wallTrim,.62);label.position.set(face-dir*3.4,tower.entryY+3.6,back-1.2);parent.add(label);
+    box(off,tower.entryY+8.4,0,.1,2.6,Math.min(7,length*.8),t.wall,g);
+    const label=labelSprite('WALL RUN',t.wallTrim,.62);label.position.set(face-dir*3.4,tower.entryY+3.6,back-1.2);g.add(label);
+  }
+}
+// Each district's ground: an open square, the sea, or terraces climbing a hillside.
+function groundFor(t,decor,parent,midZ,bounds){
+  if(decor.water){
+    const shore=decor.water.z;
+    box(0,-1,shore-1500,3000,2,3000,t.ground,parent,false);
+    box(0,-.6,shore+800,3000,.4,1600,material('#46677a',{roughness:.35,metalness:.1}),parent,false);
+    box(0,.3,shore+1,3000,1.2,2,t.crownInner,parent,false);
+    for(let i=0;i<90;i++)box(between(bounds.minX-160,bounds.maxX+160),-.38,between(shore+8,bounds.maxZ+140),between(2,6),.04,.18,'#9fc0c9',parent,false);
+    return;
+  }
+  box(0,-1,midZ,3000,2,3000,t.ground,parent,false);
+  if(decor.plaza){
+    const {x,z,r}=decor.plaza;
+    cylinder(x,.05,z,r,r,.1,t.roofFloor,parent,48);
+    for(const ring of [r-2.5,r*.62])cylinder(x,.11,z,ring,ring,.04,t.parapetCap,parent,48);
+    cylinder(x,.12,z,r*.62-1.2,r*.62-1.2,.05,t.roofFloor,parent,48);
+    for(let i=0;i<18;i++){const a=i/18*Math.PI*2,tx=x+Math.cos(a)*(r-6),tz=z+Math.sin(a)*(r-6);
+      cylinder(tx,1.4,tz,.22,.28,2.8,'#6b5a52',parent,6);
+      const crown=new THREE.Mesh(new THREE.IcosahedronGeometry(2.1,0),material(i%2?'#8a9a78':'#9aa884'));crown.position.set(tx,4.2,tz);crown.scale.y=.85;parent.add(crown);}
+  }
+  if(decor.slope){
+    // Terraced ground in 3m steps, stepping up toward the top of the hill.
+    for(let gx=-8;gx<=8;gx++)for(let gz=-8;gz<=8;gz++){
+      const x=gx*40,z=gz*40,h=THREE.MathUtils.clamp(Math.round(((decor.slope.x*x+decor.slope.z*z)*.12+5)/3)*3,0,18);
+      if(h>0)box(x,h/2,z,40.5,h,40.5,gx%2===gz%2?t.ground:t.street,parent,false);
+    }
+  }
+}
+function districtDecor(t,decor,parent,bounds){
+  if(decor.spire){
+    // A hologram mast in the empty core the spiral climbs around.
+    const cx=(bounds.minX+bounds.maxX)/2-4,cz=(bounds.minZ+bounds.maxZ)/2-10;
+    cylinder(cx,36,cz,1.2,2.6,72,'#2a2540',parent,8);
+    for(let y=8;y<70;y+=7)cylinder(cx,y,cz,2.9-y*.02,2.9-y*.02,.5,material(y%14?'#7ef0d0':'#ff7ac8',{emissive:y%14?'#7ef0d0':'#ff7ac8',emissiveIntensity:1.1}),parent,8);
+    box(cx,76,cz,.4,10,.4,material('#ffd27a',{emissive:'#ffd27a',emissiveIntensity:1.4}),parent,false);
+  }
+  if(decor.water?.lighthouse){
+    const [lx,lz]=decor.water.lighthouse;
+    cylinder(lx,15,lz,3.1,4.7,30,'#d5dde0',parent);
+    cylinder(lx,31.4,lz,3.5,3.5,2.6,material('#ffdca6',{emissive:'#ffbe70',emissiveIntensity:1.2}),parent,10);
+    cylinder(lx,34,lz,0,3.9,2.4,'#8d4a48',parent,10);
+    for(let y=6;y<28;y+=5)cylinder(lx,y,lz,3.9-y*.03,3.9-y*.03,.5,'#8d4a48',parent,10);
+    cylinder(lx,.2,lz,7,8,1.2,'#8a8f92',parent,16);
   }
 }
 function instanceWindows(matrices,color,emissive){if(!matrices.length)return;const mesh=new THREE.InstancedMesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshStandardMaterial({color,roughness:.85,emissive:color,emissiveIntensity:emissive}),matrices.length);matrices.forEach((m,i)=>mesh.setMatrixAt(i,m));mesh.instanceMatrix.needsUpdate=true;worldRoot.add(mesh);}
 // Each district gets one silhouette of its own, built from the same primitives.
 function landmarks(t,parent,placed,midZ,zNear,zFar){
   if(t.landmark==='crane'){
-    const crane=new THREE.Group();crane.position.set(start.x+99,0,midZ-27);parent.add(crane);
+    const crane=new THREE.Group();crane.position.set(districtBounds(COURSE).maxX+36,0,midZ-27);parent.add(crane);
     box(0,27,0,1.4,54,1.4,'#ad7f78',crane,false);box(-10,53,0,42,.7,.8,'#c89a87',crane,false);box(0,55,0,.65,5,.65,'#c89a87',crane,false);
     for(let x=-28;x<=8;x+=4){box(x,54,0,.18,2,.18,'#c89a87',crane,false);}box(-23,43,0,.06,20,.06,'#675f75',crane,false);
     const cablePoints=[new THREE.Vector3(-30,53,0),new THREE.Vector3(0,57,0),new THREE.Vector3(10,53,0)];crane.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(cablePoints),new THREE.LineBasicMaterial({color:'#a88685'})));
   }
   if(t.landmark==='containers'){
     const colors=['#b8664f','#4f7f8e','#7f8a55','#9a6f4f','#6d5f7a'];
-    for(let i=0;i<44;i++){
-      const x=-156+Math.floor(rand()*14)*24+between(-2,2),z=between(zFar-30,zNear+30);
+    // Container stacks line the quay edge on land, clear of the playable roofs.
+    const shore=map.decor?.water?.z??zNear;
+    for(let i=0;i<60;i++){
+      const x=between(-170,170),z=between(zFar-40,shore-4);
       if(COURSE.some(p=>Math.abs(p.x-x)<p.w/2+7&&Math.abs(p.z-z)<p.d/2+7))continue;
+      if(TOWERS.some(p=>Math.abs(p.x-x)<p.w/2+5&&Math.abs(p.z-z)<p.d/2+5))continue;
       const stack=1+Math.floor(rand()*3);
       for(let s=0;s<stack;s++)box(x,1.3+s*2.6,z,6.2,2.5,2.6,colors[Math.floor(rand()*colors.length)],parent,false);
     }
-    const lx=start.x-92,lz=midZ-20;
-    cylinder(lx,15,lz,3.1,4.7,30,'#d5dde0',parent);
-    cylinder(lx,31.4,lz,3.5,3.5,2.6,material('#ffdca6',{emissive:'#ffbe70',emissiveIntensity:1.2}),parent,10);
-    cylinder(lx,34,lz,0,3.9,2.4,'#8d4a48',parent,10);
-    for(let y=6;y<28;y+=5)cylinder(lx,y,lz,3.9-y*.03,3.9-y*.03,.5,'#8d4a48',parent,10);
   }
   if(t.landmark==='billboards'){
     const signs=['#ff7ac8','#7ef0d0','#ffd27a','#9b8cff','#ff9a6c'];
@@ -284,7 +369,8 @@ function landmarks(t,parent,placed,midZ,zNear,zFar){
 function applyTheme(t){
   scene.fog.color.set(t.fog);scene.fog.density=t.fogDensity;
   skyUniforms.top.value.set(t.sky[0]);skyUniforms.middle.value.set(t.sky[1]);skyUniforms.bottom.value.set(t.sky[2]);
-  sun.material.color.set(t.sunSphere);sun.position.set(t.sunPos[0],t.sunPos[1]+start.y-20,t.sunPos[2]+(start.z+finish.z)/2);
+  const b=districtBounds(COURSE);
+  sun.material.color.set(t.sunSphere);sun.position.set(t.sunPos[0],t.sunPos[1]+start.y-20,t.sunPos[2]+(b.minZ+b.maxZ)/2);
   hemi.color.set(t.hemiSky);hemi.groundColor.set(t.hemiGround);hemi.intensity=t.hemiIntensity;
   sunLight.color.set(t.sunColor);sunLight.intensity=t.sunIntensity;
   renderer.toneMappingExposure=t.exposure;
@@ -339,7 +425,10 @@ function courseArt(m,width=180,height=95){
 function renderMiniMap(){
   const b=districtBounds(COURSE),size=196,pad=13,scale=(size-pad*2)/Math.max(b.maxX-b.minX,b.maxZ-b.minZ);
   const mx=x=>pad+(x-b.minX)*scale,mz=z=>pad+(z-b.minZ)*scale;
-  $('#minimap-svg').innerHTML=COURSE.map((p,i)=>`<g ${p.required?`data-objective="${i}" role="button" tabindex="0" aria-label="목표 ${p.label} 선택"`:''}><rect x="${mx(p.x-p.w/2)}" y="${mz(p.z-p.d/2)}" width="${p.w*scale}" height="${p.d*scale}" rx="2" class="map-roof ${p.required?'required':''}" id="map-roof-${i}"/>${p.required?`<text x="${mx(p.x)}" y="${mz(p.z)+3}" text-anchor="middle">${p.label}</text>`:''}</g>`).join('')+`<path id="map-player" d="M0 -6 4 5 0 3 -4 5Z" fill="#fff4df" stroke="#292a31" stroke-width="1.2"/>`;
+  // Links under the roofs: solid both ways, dashed for drops you cannot climb back up.
+  const lines=COURSE.flatMap((p,i)=>p.links.filter(j=>!(COURSE[j].links.includes(i)&&j<i)).map(j=>{const q=COURSE[j],oneWay=!q.links.includes(i);
+    return `<line x1="${mx(p.x)}" y1="${mz(p.z)}" x2="${mx(q.x)}" y2="${mz(q.z)}" stroke="${oneWay?'var(--accent)':'#f4eddf'}" stroke-opacity="${oneWay?.55:.22}" stroke-width="1.4" ${oneWay?'stroke-dasharray="2 2"':''}/>`;})).join('');
+  $('#minimap-svg').innerHTML=lines+COURSE.map((p,i)=>`<g ${p.required?`data-objective="${i}" role="button" tabindex="0" aria-label="목표 ${p.label} 선택"`:''}><rect x="${mx(p.x-p.w/2)}" y="${mz(p.z-p.d/2)}" width="${p.w*scale}" height="${p.d*scale}" rx="2" class="map-roof ${p.required?'required':''}" id="map-roof-${i}"/>${p.required?`<text x="${mx(p.x)}" y="${mz(p.z)+3}" text-anchor="middle">${p.label}</text>`:''}</g>`).join('')+`<path id="map-player" d="M0 -6 4 5 0 3 -4 5Z" fill="#fff4df" stroke="#292a31" stroke-width="1.2"/>`;
   $('#minimap-svg').querySelectorAll('[data-objective]').forEach(el=>{
     const choose=()=>{const i=Number(el.dataset.objective);if(!run.visited.has(i)){targetIndex=i;updateProgress();}};
     el.addEventListener('click',choose);el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose();}});
@@ -411,7 +500,7 @@ $('#sound-button').addEventListener('click',()=>{soundEnabled=!soundEnabled;$('#
 let previousFocus=null;
 function modal(html){previousFocus=document.activeElement;$('#modal-content').innerHTML=html;$('#modal').classList.remove('hidden');$('#modal-close').focus();}
 function hideModal(){ $('#modal').classList.add('hidden');document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.tab==='play'));previousFocus?.focus(); }
-function openGuide(){modal(`<div class="modal-eyebrow">A LITTLE KNOW-HOW</div><h2 id="modal-title">도시 위를 달리는 법.</h2><p class="modal-description">카메라는 달리는 방향을 자연스럽게 따라갑니다.<br>캐릭터의 다음 발걸음에만 집중하세요.</p><div class="guide-row"><span>캐릭터 이동</span><span><kbd>W A S D</kbd> / <kbd>방향키</kbd></span></div><div class="guide-row"><span>점프</span><kbd>SPACE</kbd></div><div class="guide-row"><span>벽 차고 오르기</span><span>벽에 닿으면 <kbd>SPACE 다시</kbd></span></div><div class="guide-row"><span>전력질주</span><span>이동하면 자동 질주</span></div><div class="guide-row"><span>슬라이딩 · 낮은 배관 아래로</span><kbd>SHIFT</kbd></div><div class="guide-row"><span>슬라이드 점프</span><span><kbd>SHIFT</kbd> → <kbd>SPACE</kbd></span></div><div class="guide-row"><span>마지막 착지 옥상으로 복귀</span><kbd>R</kbd></div><div class="guide-row"><span>처음부터 다시 · 시간 0부터</span><kbd>T</kbd></div><div class="guide-row"><span>일시정지</span><kbd>ESC</kbd></div><p class="guide-note">A–H로 표시된 필수 옥상 8곳을 순서 없이 모두 밟으세요.<br>마지막 목표에 착지하면 즉시 시간이 멈춥니다.<br>미니맵에서 목표를 선택하고 일반 옥상을 지름길로 이용하세요.<br>이동 키로 달리다가 가장자리에서 점프!<br>건물 사이 골목에서는 한 번의 점프로 닿지 않습니다.<br>맞은편 건물 벽에 닿는 순간 Space를 다시 눌러 차고 오르세요.<br>건물 옆을 스치며 뛰면 잠시 벽을 타고 달릴 수 있습니다.<br>옥상을 가로지르는 배관·빨래 건조대는 서서 지나갈 수 없습니다.<br>바닥 화살표가 보이면 Shift로 미끄러져 아래를 통과하세요.<br>슬라이딩 직후 점프하면 빨라진 속도를 그대로 이어갑니다.<br>추락해도 기록 측정은 계속됩니다. 일시정지 중에는 멈춥니다.</p><button class="modal-action" id="guide-done">준비됐어요 ↗</button>`);$('#guide-done').onclick=hideModal;}
+function openGuide(){modal(`<div class="modal-eyebrow">A LITTLE KNOW-HOW</div><h2 id="modal-title">도시 위를 달리는 법.</h2><p class="modal-description">카메라는 달리는 방향을 자연스럽게 따라갑니다.<br>캐릭터의 다음 발걸음에만 집중하세요.</p><div class="guide-row"><span>캐릭터 이동</span><span><kbd>W A S D</kbd> / <kbd>방향키</kbd></span></div><div class="guide-row"><span>점프</span><kbd>SPACE</kbd></div><div class="guide-row"><span>벽 차고 오르기</span><span>벽에 닿으면 <kbd>SPACE 다시</kbd></span></div><div class="guide-row"><span>전력질주</span><span>이동하면 자동 질주</span></div><div class="guide-row"><span>슬라이딩 · 낮은 배관 아래로</span><kbd>SHIFT</kbd></div><div class="guide-row"><span>슬라이드 점프</span><span><kbd>SHIFT</kbd> → <kbd>SPACE</kbd></span></div><div class="guide-row"><span>마지막 착지 옥상으로 복귀</span><kbd>R</kbd></div><div class="guide-row"><span>처음부터 다시 · 시간 0부터</span><kbd>T</kbd></div><div class="guide-row"><span>일시정지</span><kbd>ESC</kbd></div><p class="guide-note">A–H로 표시된 필수 옥상 8곳을 순서 없이 모두 밟으세요.<br>마지막 목표에 착지하면 즉시 시간이 멈춥니다.<br>미니맵에서 목표를 선택하고 일반 옥상을 지름길로 이용하세요.<br>옥상 가장자리의 민트색 화살표는 오갈 수 있는 길, 주황색 화살표는 뛰어내리기만 되는 길입니다.<br>이동 키로 달리다가 가장자리에서 점프!<br>건물 사이 골목에서는 한 번의 점프로 닿지 않습니다.<br>맞은편 건물 벽에 닿는 순간 Space를 다시 눌러 차고 오르세요.<br>건물 옆을 스치며 뛰면 잠시 벽을 타고 달릴 수 있습니다.<br>옥상을 가로지르는 배관·빨래 건조대는 서서 지나갈 수 없습니다.<br>바닥 화살표가 보이면 Shift로 미끄러져 아래를 통과하세요.<br>슬라이딩 직후 점프하면 빨라진 속도를 그대로 이어갑니다.<br>추락해도 기록 측정은 계속됩니다. 일시정지 중에는 멈춥니다.</p><button class="modal-action" id="guide-done">준비됐어요 ↗</button>`);$('#guide-done').onclick=hideModal;}
 function openRecords(){
   const list=recordStore.get(recordsView),viewed=MAPS.find(m=>m.id===recordsView);
   const rows=list.map((r,i)=>`<tr><td>${String(i+1).padStart(2,'0')}</td><td>${formatTime(r.time)}</td><td>${safeDate(r.date)}</td></tr>`).join('');
@@ -471,8 +560,9 @@ function updatePhysics(dt){
   if(event.wallJumped){tone(580,.13,'sawtooth',.025);toast('WALL KICK × '+player.wallJumps+' · 앞으로 이어가세요');}else if(event.jumped)tone(300,.07,'triangle',.025);if(event.slideStarted)tone(140,.2,'triangle',.06);
   // Call the slide out once per section: the structure ahead is only passable low.
   const gate=GATES.find(g=>g.index===player.roof);
-  if(gate&&player.grounded&&!announcedGates.has(gate.index)&&Math.abs(player.z-gate.z)<13&&Math.abs(player.x-gate.x)<gate.w/2&&(gate.z-player.z)*player.vz>0){
-    announcedGates.add(gate.index);toast('LOW CLEARANCE · SHIFT로 슬라이딩');
+  if(gate&&player.grounded&&!announcedGates.has(gate.index)){
+    const alongZ=gate.axis==='z',along=alongZ?player.z-gate.z:player.x-gate.x,lateral=alongZ?player.x-gate.x:player.z-gate.z;
+    if(Math.abs(along)<13&&Math.abs(lateral)<gate.span/2&&along*(alongZ?player.vz:player.vx)<0){announcedGates.add(gate.index);toast('LOW CLEARANCE · SHIFT로 슬라이딩');}
   }
   if(visitRoof(run,player,COURSE)){
     tone(620+run.visited.size*40,.13);toast(`VISITED ${COURSE[player.roof].label} · ${run.visited.size} / ${run.required.size}`);updateProgress();
