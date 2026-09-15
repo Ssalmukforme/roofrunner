@@ -59,8 +59,12 @@ test('wall links cannot be jumped and are climbed with a facade kick',()=>{
       assert.equal(crossLink(course,wall.from,wall.to,{kick:false}).arrived,false,`${tag} must need the kick`);
       const climb=crossLink(course,wall.from,wall.to);
       assert.ok(climb.arrived&&climb.kicks>0,`${tag} should be climbed by kicking`);
+      const expected={both:2,one:1,none:0}[wall.towers];
+      assert.equal(TOWERS.filter(t=>t.index===wall.from&&t.exitIndex===wall.to).length,expected,`${tag} has the wrong number of side buildings`);
     }
   }
+  // The facade does the work; side buildings are scenery that some walls have and some do not.
+  assert.deepEqual(new Set(MAPS.flatMap(m=>m.walls.map(w=>w.towers))),new Set(['both','one','none']));
   selectMap('sunset');
 });
 test('a low structure stops a runner on their feet and lets a slide through',()=>{
@@ -107,7 +111,8 @@ test('the towers stand clear of the rooftops and leave the running line open',()
 // Places the runner in the air beside a building face, the way an edge take-off leaves you.
 function beside(mapId){
   selectMap(mapId);
-  const lead=TOWERS.find(t=>t.lead),[dx,dz]=lead.dir,alongZ=lead.axis==='z';
+  const lead=TOWERS.find(t=>t.lead);if(!lead)return null;
+  const [dx,dz]=lead.dir,alongZ=lead.axis==='z';
   const p=createPlayer(lead.index);
   const faceGap=BODY.radius+.1;
   if(alongZ){p.x=lead.x>p.x?lead.x-lead.w/2-faceGap:lead.x+lead.w/2+faceGap;p.z=lead.z;}
@@ -117,7 +122,8 @@ function beside(mapId){
 }
 test('a kick off a side face rises and keeps the run going forward',()=>{
   for(const map of MAPS){
-    const {p,lead,input}=beside(map.id),[dx,dz]=lead.dir;
+    const found=beside(map.id);if(!found)continue;
+    const {p,lead,input}=found,[dx,dz]=lead.dir;
     const e=stepPlayer(p,{...input,sprint:true,jumpPressed:true},1/120);
     assert.ok(e.wallJumped,`${map.id} should find the face`);assert.ok(p.vy>12);
     assert.ok(p.vx*dx+p.vz*dz>15,`${map.id} forward speed survives the kick`);

@@ -88,7 +88,7 @@ export function buildDistrict({start,steps}){
     if(kind!=='wall')return;
     add(lo,hi);course[hi].climb=true;
     const g=linkGeometry(course[lo],course[hi]);
-    walls.push({from:lo,to:hi,axis:g.axis,dir:g.dir,side:wall.side||1,width:wall.width||7,rise:wall.rise||18,extend:wall.extend??3});
+    walls.push({from:lo,to:hi,axis:g.axis,dir:g.dir,side:wall.side||1,width:wall.width||7,rise:wall.rise||18,extend:wall.extend??3,towers:wall.towers||'both'});
   };
   for(const s of steps){
     if(s.join){connect(byId.get(s.join[0]),byId.get(s.join[1]),s.wall?'wall':s.kind||'both',s.wall);continue;}
@@ -101,9 +101,10 @@ export function buildDistrict({start,steps}){
   return {course,walls};
 }
 export const ALLEY = { clearance:.8 };
-// A wall section is a gap flanked by two neighbouring buildings that stand just outside the rooftop
-// edges, so nothing blocks the running line. The climb is the kick off the taller facade at the end;
-// taking off along an edge gives a wall run down the side of the building on the way.
+// A wall section is climbed by kicking the taller facade at the end of the gap. Neighbouring buildings
+// beside the gap are optional — `towers` is 'both', 'one' (on `side`) or 'none' — and when present they
+// stand just outside the rooftop edges, so nothing blocks the running line and taking off along that
+// edge gives a wall run down their side.
 export function buildTowers(course,walls=[]){
   return walls.flatMap(w=>{
     const a=course[w.from],b=course[w.to],[dx,dz]=w.dir,alongZ=w.axis==='z',s=alongZ?dz:dx;
@@ -112,7 +113,8 @@ export function buildTowers(course,walls=[]){
     const offset=Math.max(alongZ?a.w:a.d,alongZ?b.w:b.d)/2+ALLEY.clearance;
     // The lateral axis is the travel direction turned a quarter to the right: (-dz, dx).
     const lateral=alongZ?a.x:a.z,turn=alongZ?-dz:dx;
-    return [-1,1].map(side=>{
+    const sides=w.towers==='none'?[]:w.towers==='one'?[w.side]:[-1,1];
+    return sides.map(side=>{
       const c=lateral+side*turn*(offset+w.width/2);
       const shared={bottom:0,index:w.from,exitIndex:w.to,entryY:a.y,exitY:b.y,axis:w.axis,dir:w.dir,span,width:w.width,side,
         lead:side===w.side,top:Math.max(a.y,b.y)+w.rise-(side===w.side?0:6)};
@@ -147,7 +149,7 @@ export const MAPS = [
       {id:'n',from:'bn',dir:'N',gap:7,w:24,d:14,dy:1,label:'A',name:'시계탑 광장'},
       {id:'ne1',from:'n',dir:'E',gap:5,w:24,d:12,dy:2,name:'빨래 건조대 골목',slide:{kind:'laundry',axis:'x'}},
       {id:'ne',from:'ne1',dir:'E',gap:5,w:16,d:20,off:4,dy:-2,name:'노을 모퉁이'},
-      {id:'perch',from:'ne',dir:'N',gap:10,w:16,d:14,dy:4,wall:{side:-1,extend:0},label:'B',name:'노을 전망대'},
+      {id:'perch',from:'ne',dir:'N',gap:10,w:16,d:14,dy:4,wall:{side:1,towers:'one'},label:'B',name:'노을 전망대'},
       {id:'e1',from:'ne',dir:'S',gap:5,w:14,d:14,off:-1,name:'간판 옥상'},
       {id:'e',from:'e1',dir:'S',gap:6,w:18,d:22,off:-6,dy:-1,label:'C',name:'스카이 가든'},
       {join:['be','e']},
@@ -157,7 +159,7 @@ export const MAPS = [
       {id:'s',from:'s1',dir:'W',gap:5,w:20,d:18,off:-2,dy:-2,name:'남쪽 광장'},
       {join:['bs','s']},
       {id:'sw',from:'s',dir:'W',gap:6,w:16,d:16,off:-4,dy:1,label:'E',name:'교회 첨탑'},
-      {id:'bell',from:'sw',dir:'S',gap:10,w:14,d:14,dy:4,wall:{side:1,width:4},label:'F',name:'종탑 옥상'},
+      {id:'bell',from:'sw',dir:'S',gap:10,w:14,d:14,dy:4,wall:{towers:'none'},label:'F',name:'종탑 옥상'},
       {id:'w1',from:'sw',dir:'N',gap:6,w:14,d:22,off:-8,dy:2,name:'서쪽 테라스',slide:{kind:'laundry',axis:'z'}},
       {id:'w',from:'w1',dir:'N',gap:5,w:18,d:16,off:-1,dy:-2,label:'G',name:'바람의 옥상'},
       {join:['bw','w']},
@@ -179,14 +181,14 @@ export const MAPS = [
       {id:'e1',from:'start',dir:'E',gap:6.5,w:26,d:14,off:2,dy:2,name:'냉동 창고',slide:{kind:'laundry',axis:'x'}},
       {id:'e2',from:'e1',dir:'E',gap:6,w:16,d:18,off:-2,dy:-1,name:'세관 옥상'},
       {id:'e3',from:'e2',dir:'E',gap:7,w:24,d:14,off:-3,dy:1,label:'B',name:'등대지기 집'},
-      {id:'fog',from:'start',dir:'N',gap:10,w:20,d:16,dy:4,wall:{side:1,extend:0},label:'C',name:'해무 전망대'},
+      {id:'fog',from:'start',dir:'N',gap:10,w:20,d:16,dy:4,wall:{towers:'none'},label:'C',name:'해무 전망대'},
       {id:'p1',from:'start',dir:'S',gap:11,w:12,d:28,dy:-4,wall:{side:1,extend:0},name:'중앙 부두'},
       {id:'q1',from:'p1',dir:'E',gap:6,w:30,d:10,name:'방파제 산책로',slide:{kind:'duct',axis:'x'}},
       {id:'p3',from:'q1',dir:'E',gap:6,w:12,d:30,name:'동쪽 부두'},
       {join:['e2','p3'],kind:'drop'},
       {id:'q2',from:'p1',dir:'W',gap:6,w:38,d:10,label:'H',name:'어구 창고'},
       {id:'p2',from:'q2',dir:'W',gap:6,w:12,d:30,name:'서쪽 부두'},
-      {join:['p2','w2'],wall:{side:-1,extend:0}},
+      {join:['p2','w2'],wall:{side:-1,towers:'one',extend:0}},
       {id:'p1b',from:'p1',dir:'S',gap:6,w:12,d:24,dy:2,name:'부두 창고',slide:{kind:'duct',axis:'z'}},
       {id:'p1c',from:'p1b',dir:'S',gap:6,w:18,d:16,dy:-2,label:'D',name:'중앙 부두 끝'},
       {id:'p2b',from:'p2',dir:'S',gap:6,w:16,d:18,off:3,label:'E',name:'어선 계류장'},
@@ -206,9 +208,9 @@ export const MAPS = [
       {id:'n4',from:'n3',dir:'E',gap:10,w:12,d:14,dy:4,wall:{side:1,width:6,rise:22,extend:0},name:'전광판 벽'},
       {id:'n5',from:'n4',dir:'E',gap:6,w:14,d:14,off:2,dy:2,label:'B',name:'헬리패드'},
       {id:'n6',from:'n5',dir:'S',gap:6,w:14,d:28,off:1,dy:2,name:'네온 덕트',slide:{kind:'laundry',axis:'z',at:-2.3}},
-      {id:'n7',from:'n6',dir:'S',gap:10,w:14,d:12,dy:4,wall:{side:-1,width:6,rise:22},label:'C',name:'네온 왕관'},
+      {id:'n7',from:'n6',dir:'S',gap:10,w:14,d:12,dy:4,wall:{side:1,width:6,rise:22,towers:'one'},label:'C',name:'네온 왕관'},
       {join:['n7','start'],kind:'drop'},
-      {id:'o1',from:'n1',dir:'W',gap:10,w:16,d:16,dy:-5,wall:{side:1,width:6,extend:0},label:'D',name:'노래방 간판'},
+      {id:'o1',from:'n1',dir:'W',gap:10,w:16,d:16,dy:-5,wall:{towers:'none'},label:'D',name:'노래방 간판'},
       {id:'o2',from:'n5',dir:'E',gap:12,w:18,d:18,off:6,dy:-8,label:'E',name:'파친코 옥상'},
       {id:'o2a',from:'o2',dir:'S',gap:6,w:14,d:14,off:-4,dy:-2,name:'골목 지붕'},
       {id:'o2b',from:'o2a',dir:'S',gap:6,w:14,d:14,off:-2,label:'F',name:'라멘집 옥상'},
@@ -234,7 +236,7 @@ export const MAPS = [
       {id:'u1',from:'start',dir:'N',gap:6,w:14,d:12,off:-6,dy:2,name:'돌계단 지붕'},
       {id:'u2',from:'u1',dir:'W',gap:6,w:24,d:14,off:-2,dy:2,name:'온실 테라스'},
       {id:'u3',from:'u2',dir:'N',gap:6,w:14,d:12,off:6,dy:2,label:'A',name:'장독대'},
-      {id:'u4',from:'u3',dir:'W',gap:10,w:16,d:14,dy:4,wall:{side:-1,width:4,extend:0},name:'해 뜨는 벽'},
+      {id:'u4',from:'u3',dir:'W',gap:10,w:16,d:14,dy:4,wall:{side:-1,width:4,extend:0,towers:'one'},name:'해 뜨는 벽'},
       {id:'top',from:'u4',dir:'N',gap:6,w:22,d:18,off:4,dy:2,label:'B',name:'언덕 꼭대기'},
       {id:'f1',from:'top',dir:'E',gap:12,w:28,d:18,off:2,dy:-4,name:'긴 활강',slide:{kind:'awning',axis:'x',at:2}},
       {id:'f2',from:'f1',dir:'E',gap:8,w:24,d:16,off:4,dy:-3,label:'C',name:'풍차 지붕'},
@@ -246,7 +248,7 @@ export const MAPS = [
       {id:'v1',from:'f6',dir:'W',gap:6,w:30,d:14,off:4,dy:2,name:'기찻길 지붕',slide:{kind:'awning',axis:'x'}},
       {id:'v2',from:'v1',dir:'W',gap:6,w:18,d:16,off:-3,label:'F',name:'우체국 옥상'},
       {id:'v3',from:'v2',dir:'N',gap:6,w:14,d:12,off:1,dy:2,name:'골목 계단'},
-      {join:['v3','start'],wall:{side:1,width:3.5,extend:0}},
+      {join:['v3','start'],wall:{towers:'none'}},
       {id:'g1',from:'v2',dir:'W',gap:6,w:22,d:16,off:2,label:'G',name:'성당 마당'},
       {id:'g2',from:'g1',dir:'N',gap:6,w:16,d:16,off:-4,dy:2,name:'골목 끝'},
       {id:'g3',from:'g2',dir:'N',gap:6,w:18,d:20,off:-5,dy:1,label:'H',name:'언덕 학교'},
