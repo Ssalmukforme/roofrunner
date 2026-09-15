@@ -3,6 +3,8 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import './style.css';
 import { createRun, tickRun, visitRoof, nearestUnvisited } from './exploration.js';
 import { MAPS, COURSE, TOWERS, WALLS, GATES, GATE, BODY, selectMap, createPlayer, stepPlayer, formatTime, sanitizeRecords, districtBounds, neighbors, linkGeometry } from './physics.js';
+import { createRanking, escapeHtml } from './ranking.js';
+import { RANKING_GAME, boardIdFor } from './ranking-boards.js';
 
 const $ = (selector) => document.querySelector(selector);
 const canvas = $('#world');
@@ -501,14 +503,41 @@ let previousFocus=null;
 function modal(html){previousFocus=document.activeElement;$('#modal-content').innerHTML=html;$('#modal').classList.remove('hidden');$('#modal-close').focus();}
 function hideModal(){ $('#modal').classList.add('hidden');document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.tab==='play'));previousFocus?.focus(); }
 function openGuide(){modal(`<div class="modal-eyebrow">A LITTLE KNOW-HOW</div><h2 id="modal-title">도시 위를 달리는 법.</h2><p class="modal-description">카메라는 달리는 방향을 자연스럽게 따라갑니다.<br>캐릭터의 다음 발걸음에만 집중하세요.</p><div class="guide-row"><span>캐릭터 이동</span><span><kbd>W A S D</kbd> / <kbd>방향키</kbd></span></div><div class="guide-row"><span>점프</span><kbd>SPACE</kbd></div><div class="guide-row"><span>벽 차고 오르기</span><span>벽에 닿으면 <kbd>SPACE 다시</kbd></span></div><div class="guide-row"><span>전력질주</span><span>이동하면 자동 질주</span></div><div class="guide-row"><span>슬라이딩 · 낮은 배관 아래로</span><kbd>SHIFT</kbd></div><div class="guide-row"><span>슬라이드 점프</span><span><kbd>SHIFT</kbd> → <kbd>SPACE</kbd></span></div><div class="guide-row"><span>마지막 착지 옥상으로 복귀</span><kbd>R</kbd></div><div class="guide-row"><span>처음부터 다시 · 시간 0부터</span><kbd>T</kbd></div><div class="guide-row"><span>일시정지</span><kbd>ESC</kbd></div><p class="guide-note">A–H로 표시된 필수 옥상 8곳을 순서 없이 모두 밟으세요.<br>마지막 목표에 착지하면 즉시 시간이 멈춥니다.<br>미니맵에서 목표를 선택하고 일반 옥상을 지름길로 이용하세요.<br>옥상 가장자리의 민트색 화살표는 오갈 수 있는 길, 주황색 화살표는 뛰어내리기만 되는 길입니다.<br>이동 키로 달리다가 가장자리에서 점프!<br>건물 사이 골목에서는 한 번의 점프로 닿지 않습니다.<br>맞은편 건물 벽에 닿는 순간 Space를 다시 눌러 차고 오르세요.<br>건물 옆을 스치며 뛰면 잠시 벽을 타고 달릴 수 있습니다.<br>옥상을 가로지르는 배관·빨래 건조대는 서서 지나갈 수 없습니다.<br>바닥 화살표가 보이면 Shift로 미끄러져 아래를 통과하세요.<br>슬라이딩 직후 점프하면 빨라진 속도를 그대로 이어갑니다.<br>추락해도 기록 측정은 계속됩니다. 일시정지 중에는 멈춥니다.</p><button class="modal-action" id="guide-done">준비됐어요 ↗</button>`);$('#guide-done').onclick=hideModal;}
+const ranking=createRanking(RANKING_GAME,{storagePrefix:'roofrunner'});
+let recordsScope='global',recordsToken=0;
 function openRecords(){
-  const list=recordStore.get(recordsView),viewed=MAPS.find(m=>m.id===recordsView);
+  const list=recordStore.get(recordsView),viewed=MAPS.find(m=>m.id===recordsView),global=recordsScope==='global',token=++recordsToken;
   const rows=list.map((r,i)=>`<tr><td>${String(i+1).padStart(2,'0')}</td><td>${formatTime(r.time)}</td><td>${safeDate(r.date)}</td></tr>`).join('');
-  modal(`<div class="modal-eyebrow">YOU VS. YOURSELF</div><h2 id="modal-title">나의 러닝 기록.</h2><p class="modal-description">${viewed.name} · 빠른 순서대로 상위 10개<br>이 브라우저에 저장된 개인 기록입니다.</p><div class="record-tabs">${MAPS.map(m=>`<button class="record-tab${m.id===recordsView?' active':''}" data-map="${m.id}">${m.name}</button>`).join('')}</div>${rows?`<table class="records-table"><thead><tr><th>RANK</th><th>TIME</th><th>DATE</th></tr></thead><tbody>${rows}</tbody></table>`:'<div class="empty-records">아직 이 코스를 완주한 러닝이 없어요.<br>첫 번째 기록의 주인공이 되어보세요.</div>'}<button class="modal-action" id="records-run">${recordsView===map.id?'새 기록에 도전 ↗':`${viewed.name}${toParticle(viewed.name)} 이동 ↗`}</button>`);
+  const localBody=rows?`<table class="records-table"><thead><tr><th>RANK</th><th>TIME</th><th>DATE</th></tr></thead><tbody>${rows}</tbody></table>`:'<div class="empty-records">아직 이 코스를 완주한 러닝이 없어요.<br>첫 번째 기록의 주인공이 되어보세요.</div>';
+  modal(`<div class="modal-eyebrow">${global?'EVERY RUNNER, ONE BOARD':'YOU VS. YOURSELF'}</div><h2 id="modal-title">${global?'전체 러닝 랭킹.':'나의 러닝 기록.'}</h2><p class="modal-description">${viewed.name} · 빠른 순서대로 ${global?'플레이어별 최고 기록':'상위 10개'}<br>${global?'모든 러너의 기록이 모이는 전체 랭킹입니다.':'이 브라우저에 저장된 개인 기록입니다.'}</p><div class="record-scope" role="tablist"><button class="record-scope-tab${global?' active':''}" role="tab" aria-selected="${global}" data-scope="global">전체 랭킹</button><button class="record-scope-tab${global?'':' active'}" role="tab" aria-selected="${!global}" data-scope="local">내 기록</button></div><div class="record-tabs">${MAPS.map(m=>`<button class="record-tab${m.id===recordsView?' active':''}" data-map="${m.id}">${m.name}</button>`).join('')}</div><div id="records-body">${global?'<div class="empty-records">전체 랭킹을 불러오는 중…</div>':localBody}</div><p id="records-standing" class="records-standing"></p><button class="modal-action" id="records-run">${recordsView===map.id?'새 기록에 도전 ↗':`${viewed.name}${toParticle(viewed.name)} 이동 ↗`}</button>`);
   $('#modal-content').querySelectorAll('.record-tab').forEach(button=>button.onclick=()=>{recordsView=button.dataset.map;openRecords();});
+  $('#modal-content').querySelectorAll('.record-scope-tab').forEach(button=>button.onclick=()=>{recordsScope=button.dataset.scope;openRecords();});
   $('#records-run').onclick=()=>{if(recordsView===map.id)startRun();else{const id=recordsView;hideModal();applyMap(id);}};
+  if(!global)return;
+  const body=$('#records-body');
+  ranking.board(boardIdFor(viewed)).then(data=>{
+    if(token!==recordsToken||!body.isConnected)return;
+    body.innerHTML=data.entries.length?`<table class="records-table"><thead><tr><th>RANK</th><th>RUNNER</th><th>TIME</th></tr></thead><tbody>${data.entries.map(e=>`<tr class="${e.you?'you':''}"><td>${String(e.rank).padStart(2,'0')}</td><td>${escapeHtml(e.name)}${e.you?'<em>YOU</em>':''}</td><td>${formatTime(e.value)}</td></tr>`).join('')}</tbody></table>`:'<div class="empty-records">아직 이 코스의 전체 랭킹 기록이 없어요.<br>첫 번째 기록의 주인공이 되어보세요.</div>';
+    $('#records-standing').textContent=data.you?`내 순위 ${data.you.rank}위 · ${formatTime(data.you.value)} · 참가 ${data.total}명`:data.total?`참가 ${data.total}명`:'';
+  }).catch(error=>{if(token===recordsToken&&body.isConnected)body.innerHTML=`<div class="empty-records">${ranking.describeError(error)}<br>내 기록 탭에서 이 브라우저의 기록을 볼 수 있어요.</div>`;});
 }
-// 받침 유무에 따라 '로' / '으로'를 고릅니다.
+const rankFormHtml=()=>`<form class="rank-form" id="rank-form"><label for="rank-name">전체 랭킹에 남길 이름</label><div><input id="rank-name" maxlength="16" autocomplete="nickname" value="${escapeHtml(ranking.getName('RUNNER'))}"><button type="submit" id="rank-submit">랭킹 등록</button></div><p id="rank-status" class="rank-status" role="status"></p></form>`;
+function wireRankForm(m,time,fallCount,route){
+  let submitted=false;
+  $('#rank-form').addEventListener('submit',async e=>{
+    e.preventDefault();if(submitted)return;
+    const button=$('#rank-submit'),status=$('#rank-status'),name=$('#rank-name').value.trim()||'RUNNER';
+    ranking.setName(name);button.disabled=true;button.textContent='등록 중…';status.className='rank-status';status.textContent='전체 랭킹에 등록하는 중…';
+    try{
+      const {improved,standing}=await ranking.submit(boardIdFor(m),{name,value:time,meta:{falls:fallCount,route}});
+      submitted=true;if(!button.isConnected)return;
+      button.textContent='등록됨';status.classList.add('ok');status.textContent=`전체 ${standing.rank}위 / ${standing.total}명${improved?' · 내 최고 기록 갱신':''}`;
+    }catch(error){
+      if(!button.isConnected)return;
+      const blocked=error.code==='implausible_score';button.disabled=blocked;button.textContent=blocked?'등록 불가':'다시 등록';status.classList.add('error');status.textContent=ranking.describeError(error);
+    }
+  });
+}// 받침 유무에 따라 '로' / '으로'를 고릅니다.
 function toParticle(word){const code=word.charCodeAt(word.length-1)-0xAC00;if(code<0||code>11171)return '로';const jong=code%28;return jong===0||jong===8?'로':'으로';}
 function safeDate(s){const d=new Date(s);return Number.isNaN(d.getTime())?'—':d.toLocaleDateString('ko-KR',{month:'2-digit',day:'2-digit'});}
 document.querySelectorAll('[data-tab]').forEach(button=>button.addEventListener('click',()=>{if(state!=='home')return;document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b===button));if(button.dataset.tab==='guide')openGuide();else if(button.dataset.tab==='records'){recordsView=map.id;openRecords();}else if(button.dataset.tab==='maps')openMaps();else hideModal();}));
@@ -532,12 +561,14 @@ function finishRun(){
   state='finished';keys.clear();const list=records();const previous=list[0]?.time;const isBest=!previous||elapsed<previous;const entry={time:Math.floor(elapsed),date:new Date().toISOString(),falls};
   recordStore.set(map.id,sanitizeRecords([...list,entry]));try{localStorage.setItem(map.storageKey,JSON.stringify(records()));}catch{storageAvailable=false;}updateRecords();tone(660,.2);setTimeout(()=>tone(880,.3),130);setTimeout(()=>tone(1100,.5),280);
   const delta=previous?`${elapsed<previous?'−':'+'}${formatTime(Math.abs(elapsed-previous))}`:'첫 번째 완주';
-  modal(`<div class="modal-eyebrow">${isBest?'✳ NEW PERSONAL BEST':`${map.latin.toUpperCase()} — COMPLETE`}</div><h2 id="modal-title">${isBest?'새로운 나의 기록.':'도시 전체를 달렸어요.'}</h2><p class="modal-description">${map.name} · 필수 옥상 ${run.visited.size}곳 모두 방문<br>${isBest?'오늘의 가장 빠른 발걸음. 한 번 더 달려볼까요?':'좋은 러닝이었어요. 다음에는 조금 더 빠르게.'}</p><div class="result-time">${formatTime(elapsed)}</div><p class="route-result">방문 경로 ${run.order.map(i=>COURSE[i].label).join(" → ")}</p><div class="result-details"><span>이전 최고 기록 대비 <strong>${delta}</strong></span><span>복귀 <strong>${falls}회</strong></span></div><p class="modal-description">${storageAvailable?'이 브라우저에 기록이 저장되었습니다.':'브라우저 저장 공간을 사용할 수 없어 이번 세션에만 기록됩니다.'}</p><button class="modal-action" id="run-again">한 번 더 달리기 ↗</button><button class="modal-action modal-secondary" id="finish-maps">다른 코스 달리기</button><button class="modal-action modal-secondary" id="finish-home">시작 화면으로</button>`);$('#run-again').onclick=startRun;$('#finish-maps').onclick=()=>{returnHome();openMaps();};$('#finish-home').onclick=returnHome;$('#modal-close').onclick=closeModal;
+  modal(`<div class="modal-eyebrow">${isBest?'✳ NEW PERSONAL BEST':`${map.latin.toUpperCase()} — COMPLETE`}</div><h2 id="modal-title">${isBest?'새로운 나의 기록.':'도시 전체를 달렸어요.'}</h2><p class="modal-description">${map.name} · 필수 옥상 ${run.visited.size}곳 모두 방문<br>${isBest?'오늘의 가장 빠른 발걸음. 한 번 더 달려볼까요?':'좋은 러닝이었어요. 다음에는 조금 더 빠르게.'}</p><div class="result-time">${formatTime(elapsed)}</div><p class="route-result">방문 경로 ${run.order.map(i=>COURSE[i].label).join(" → ")}</p><div class="result-details"><span>이전 최고 기록 대비 <strong>${delta}</strong></span><span>복귀 <strong>${falls}회</strong></span></div>${rankFormHtml()}<p class="modal-description">${storageAvailable?'이 브라우저에 기록이 저장되었습니다.':'브라우저 저장 공간을 사용할 수 없어 이번 세션에만 기록됩니다.'}</p><button class="modal-action" id="run-again">한 번 더 달리기 ↗</button><button class="modal-action modal-secondary" id="finish-maps">다른 코스 달리기</button><button class="modal-action modal-secondary" id="finish-home">시작 화면으로</button>`);wireRankForm(map,Math.floor(elapsed),falls,run.order.map(i=>COURSE[i].label).join(''));$('#run-again').onclick=startRun;$('#finish-maps').onclick=()=>{returnHome();openMaps();};$('#finish-home').onclick=returnHome;$('#modal-close').onclick=closeModal;
 }
 const handledKeys=['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','ShiftLeft','ShiftRight','KeyR','KeyT','Escape'];
 document.addEventListener('keydown',e=>{
   if(e.ctrlKey||e.metaKey||e.altKey)return;
-  if(e.code==='Tab'&&!$('#modal').classList.contains('hidden')){const els=[...$('#modal').querySelectorAll('button,a,[tabindex="0"]')];if(e.shiftKey&&document.activeElement===els[0]){e.preventDefault();els.at(-1).focus();}else if(!e.shiftKey&&document.activeElement===els.at(-1)){e.preventDefault();els[0].focus();}return;}
+  if(e.code==='Tab'&&!$('#modal').classList.contains('hidden')){const els=[...$('#modal').querySelectorAll('button:not([disabled]),a,input,[tabindex="0"]')];if(e.shiftKey&&document.activeElement===els[0]){e.preventDefault();els.at(-1).focus();}else if(!e.shiftKey&&document.activeElement===els.at(-1)){e.preventDefault();els[0].focus();}return;}
+  // Typing a ranking name must not trigger run controls (T restarts, R respawns, Space jumps).
+  if(e.target instanceof HTMLInputElement&&e.code!=='Escape')return;
   if(!handledKeys.includes(e.code))return;
   if(state!=='home')e.preventDefault();
   if(e.code==='Escape'&&!e.repeat){if(state==='paused')$('#resume-run')?.click();else if(state==='running'||state==='countdown')pause();else closeModal();return;}
